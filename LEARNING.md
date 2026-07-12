@@ -184,23 +184,240 @@ configured, Postgres is reachable, and migrations run. This was previously **fai
 features is a habit worth keeping: when something breaks later, you know the foundation was
 solid.
 
+### Step 0.5 — First API route: `GET /api/health` (+ security & CORS) · _2026-07-12_
+
+**Goal:** expose one real HTTP endpoint the frontend can call, and configure the two
+gatekeepers every browser API must get past: **authentication** (Spring Security) and
+**CORS**.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/common/HealthController.java`
+- `server/src/main/java/org/cj/server/auth/SecurityConfig.java`
+- `server/src/main/java/org/cj/server/ServerApplication.java` (one annotation tweak)
+
+> **Concepts:** REST controller · `@RestController` / `@GetMapping` · JSON serialization
+> (Jackson) · Spring Security `SecurityFilterChain` · authentication vs authorization ·
+> stateless API · CSRF · CORS (same-origin policy, preflight `OPTIONS`) · auto-configuration
+
+**The controller.** `@RestController` + `@GetMapping("/api/health")` maps that URL to a
+method. It returns a small Java `record`, and Spring's JSON library (Jackson) turns that
+into `{"status":"ok"}` automatically. That record→JSON conversion is the pattern every
+endpoint we build will use.
+
+**Why we needed a `SecurityConfig` at all.** Spring Security is on the classpath, and its
+default is _paranoid_: **every** endpoint is locked and it invents a random login password
+at startup (that WARN line from earlier). That's a safe default, but useless for a JSON API.
+So we defined our own `SecurityFilterChain` bean that says:
+
+- `/api/health` → `permitAll()` (public)
+- everything else → `authenticated()` (locked until real auth exists in M1)
+
+Two supporting decisions, both standard for a token API:
+
+- **CSRF disabled** — CSRF attacks abuse browser session _cookies_; a stateless token API
+  doesn't use those, so the protection is irrelevant and would just block our POSTs later.
+- **`SessionCreationPolicy.STATELESS`** — the server keeps no session/memory of you between
+  requests; every request must prove who it is on its own. This is the foundation JWT builds
+  on in M1.
+
+> **authentication vs authorization** — two different questions. *Authentication* = "who are
+> you?" (login). *Authorization* = "are you allowed to do this?" (roles/permissions). M0 has
+> neither real one yet; `permitAll`/`authenticated` are the simplest possible rules.
+
+**Why CORS, and what it is.** Browsers enforce the **same-origin policy**: JavaScript on
+`http://localhost:3000` (our frontend) is _not_ allowed to call `http://localhost:8080`
+(our backend) unless the backend explicitly says "I allow that origin." That permission
+system is **CORS**. Our `CorsConfigurationSource` bean whitelists the Next.js origin and the
+HTTP methods we'll use. For anything non-trivial the browser first sends a **preflight**
+`OPTIONS` request asking permission — you can see it succeed in the test below. (Note: CORS
+is a _browser_ rule; `curl` ignores it, which is why we pass an explicit `Origin` header to
+simulate a browser.)
+
+**One cleanup — killing the generated password.** Defining a filter chain doesn't stop Boot
+from creating that default user; it only backs off once we supply our own user store (M1).
+So we excluded `UserDetailsServiceAutoConfiguration` on `ServerApplication` to silence it.
+This is a peek at **auto-configuration**: Spring Boot wires up beans it _guesses_ you want
+based on the classpath, and `exclude = ...` is how you opt out of a guess.
+
+**How we verified (end-to-end, against the running app):**
+
+```bash
+./mvnw clean package -DskipTests          # build the jar
+java -jar target/server-0.0.1-SNAPSHOT.jar &   # run it (Postgres must be up)
+
+curl http://localhost:8080/api/health
+# → {"status":"ok"}   HTTP 200      ✅ public route works
+
+curl -o /dev/null -w "%{http_code}" http://localhost:8080/api/boards
+# → 403                             ✅ everything else is still locked
+
+curl -i -X OPTIONS http://localhost:8080/api/health \
+  -H "Origin: http://localhost:3000" -H "Access-Control-Request-Method: GET"
+# → 200 + Access-Control-Allow-Origin: http://localhost:3000   ✅ CORS preflight OK
+```
+
+All three passed, and the "generated security password" line was gone from the logs. Notice
+the verification style: we didn't just trust the code compiled — we drove the actual HTTP
+behavior and watched it do the right thing (allow, block, and permit-cross-origin).
+
+### Step 0.6 — One consistent shape for every error · _2026-07-12_
+
+**Goal:** make _every_ failure the backend returns look the same, so the frontend can
+parse any error with one code path instead of guessing per-endpoint.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/common/GlobalExceptionHandler.java` (new)
+- `server/src/main/java/org/cj/server/common/ApiError.java` (already existed — the shape)
+- `server/src/main/java/org/cj/server/common/NotFoundException.java` (already existed)
+- `server/src/test/java/org/cj/server/common/GlobalExceptionHandlerTest.java` (new — proof)
+
+> **Concepts:** `@RestControllerAdvice` · `@ExceptionHandler` · exception-to-HTTP mapping ·
+> Bean Validation (`@Valid`, `MethodArgumentNotValidException`) · fail-safe vs fail-leaky
+> (not exposing internal error messages) · MockMvc standalone setup
+
+**What we did:** added a single `@RestControllerAdvice` class. Think of it as a **catch-net
+that sits behind every controller**: whenever a request handler throws, the exception
+"bubbles up" and Spring routes it to the `@ExceptionHandler` method whose declared type most
+closely matches. Each method converts the exception into the same `ApiError` record from
+Step 0.5's sibling work, so the JSON is always `{timestamp, status, error, message, path}`
+(plus `fieldErrors` on validation failures).
+
+We handle four cases, most-specific first:
+
+| Exception thrown by our code | HTTP status | Client sees |
+|---|---|---|
+| `NotFoundException` | 404 | the resource message, e.g. "Board not found" |
+| `MethodArgumentNotValidException` (a `@Valid` DTO failed) | 400 | "Validation failed" + a `fieldErrors` list |
+| `IllegalArgumentException` | 400 | the bad-argument message |
+| anything else (`Exception`) | 500 | a generic "Internal server error" |
+
+**Why a central handler instead of try/catch in each controller?** Because otherwise every
+controller re-implements error formatting — inconsistent, repetitive, and easy to forget.
+Centralizing it means our services can just `throw new NotFoundException("Board not found")`
+and stay completely ignorant of HTTP; the translation to a status code + JSON happens in one
+place we can reason about.
+
+**Two decisions worth calling out:**
+
+- **The 500 handler logs the stack trace but hides it from the client.** A 404 or 400 is the
+  _caller's_ fault (bad id, bad input), so we don't log those as errors and we echo a helpful
+  message. A 500 is _our_ fault (a bug), so we `log.error(...)` the full trace server-side for
+  debugging but return only a generic message — leaking internal exception text to a browser
+  can expose implementation details an attacker could use. This "log detail, return generic"
+  split is a standard security posture.
+- **Spring Security's 401/403 don't come through here.** Those are thrown in the security
+  _filter chain_, which runs **before** the request ever reaches a controller — so our
+  `Exception` catch-all can't (and shouldn't) swallow them. That's why `/api/boards` still
+  returns a clean 403 from Step 0.5, unaffected by this change.
+
+**How we verified.** Rather than boot the whole app, we wrote a focused test using **MockMvc
+standalone setup**: it wires a throwaway controller (one route per exception type) plus the
+handler, with no Spring context, Postgres, or security in the way. Four tests assert each
+exception maps to the right status _and_ the right JSON — including that the 500 case returns
+`"Internal server error"` and **not** the secret exception message.
+
+```bash
+cd server
+./mvnw test -Dtest=GlobalExceptionHandlerTest   # 4 passing
+./mvnw test                                      # full suite: 5 passing
+```
+
+> **Note on reading the logs:** when the 500 test runs, you'll see a `RuntimeException: secret
+> internal detail` stack trace printed in the output. That is **not** a failure — it's the
+> handler's own `log.error(...)` doing its job. `BUILD SUCCESS` and `Failures: 0` are the truth.
+
+### Step 0.7 — Scaffold the frontend & fetch health · _2026-07-13_
+
+**Goal:** stand up the Next.js app and render the backend's health status on a real web page —
+the frontend half of the M0 demo, and the moment all three tiers (browser → backend → database)
+are proven to talk to each other.
+
+**Files:**
+
+- `frontend/` (new Next.js app — `create-next-app`)
+- `frontend/src/app/page.tsx` (the health page)
+- `frontend/src/lib/health.ts` (typed fetch helper)
+- `frontend/.env.local` + `frontend/.env.example` (backend URL config)
+- `frontend/src/app/layout.tsx` (title tweak)
+
+> **Concepts:** Next.js App Router · React Server Components (RSC) vs Client Components ·
+> server-side vs client-side data fetching · first paint / time-to-content · CORS preflight ·
+> `fetch` caching (`cache: 'no-store'`) · server-only env vars (no `NEXT_PUBLIC_` prefix) ·
+> graceful degradation (friendly failure state)
+
+**What we did.** Scaffolded a separate Next.js app in `frontend/` (TypeScript, App Router,
+Tailwind), then replaced the starter homepage with a **Server Component** that calls
+`GET /api/health` on the Spring backend while it renders and shows a green "Backend: ok" (or a
+red failure state). The backend URL comes from an env var, not a hardcode.
+
+**Why a separate app (not one combined project)?** Frontend and backend have different jobs,
+languages, and deploy lifecycles — Next.js/TypeScript for the UI, Spring/Java for the API and
+data. Keeping them as two apps in one repo lets each evolve and deploy independently while the
+shared contract (the REST API) stays visible in one place.
+
+**The big decision: server-side vs client-side fetching — and why "fast" pointed us to server-side.**
+There are two places the health call could happen:
+
+- **Server-side (what we chose):** the Next.js _server_ makes the call during render and sends
+  the browser fully-formed HTML with the status already in it. The user sees content on first
+  paint — no spinner — and the Next-server→Spring hop is server-to-server, so it skips the
+  browser's **CORS preflight** entirely. Faster first load.
+- **Client-side:** ship an empty shell, then have the _browser_ fetch after the page loads
+  (spinner → data), paying a CORS preflight on the cross-origin call.
+
+For an initial page load, server-side wins on speed, so that's our **app-wide default**: render
+initial data on the server. Client-side fetching is reserved for what actually needs it later —
+interactive mutations (drag-and-drop) and the real-time WebSocket layer (M5), where we'll add
+React Query for caching + optimistic updates. The rule of thumb: **server-render what the user
+should see immediately; fetch on the client only what changes after they interact.**
+
+> You can see this decision in Next's build output: route `/` is marked `ƒ (Dynamic)` because
+> `cache: 'no-store'` forces a fresh server render every request — exactly right for a health
+> check, which must never be stale.
+
+**Why the backend URL is an env var (`API_BASE_URL`).** Same reasoning as the backend's
+datasource in Step 0.2: the code shouldn't bake in `localhost:8080`, because production points
+at a different host. Note there's **no `NEXT_PUBLIC_` prefix** — that prefix is what exposes a
+variable to the browser bundle, and since this fetch runs only on the server, the URL stays
+server-side and never leaks to the client.
+
+**Why the friendly failure state.** If the backend is down, a naïve `fetch(...).json()` throws
+and Next renders an ugly error page. We wrap the call in try/catch and return a typed result, so
+a dead backend shows a calm red "Backend unreachable" instead of a crash. Handling the sad path
+is part of "done", not an afterthought.
+
+**How we verified (end-to-end, the whole chain live):**
+
+```bash
+docker compose up -d                    # Postgres
+cd server && ./mvnw spring-boot:run &   # backend on :8080
+cd frontend && npm run dev              # frontend on :3000
+```
+
+- Open `http://localhost:3000` → **"Backend: ok"** (green). ✅ browser→backend→db all wired.
+- Stop the backend, reload → **"Backend unreachable"** (red), no crash. ✅ sad path.
+- Restart the backend, reload → **"Backend: ok"** again. ✅ recovery.
+- `npm run build` succeeds (type-checks the whole app). ✅
+
+> **A fun gotcha we hit:** killing the backend with `lsof -ti tcp:8080 | xargs kill` also killed
+> the _frontend_ process. Why? Because the Next.js server had an open **client** socket to
+> port 8080 (its server-side fetch), so `lsof` listed it too. Concrete proof the fetch really is
+> server-to-server — and a reminder that "kill everything on this port" catches both ends of a
+> connection.
+
 ---
 
 ### Where M0 stands
 
-Done: ✅ Postgres running · ✅ backend connected · ✅ migrations wired · ✅ boot verified
+Done: ✅ Postgres running · ✅ backend connected · ✅ migrations wired · ✅ boot verified ·
+✅ first endpoint (`/api/health`) with security + CORS · ✅ global exception handler ·
+✅ Next.js frontend rendering backend health
 
-Still to do in M0:
-
-- [ ] `GET /api/health` endpoint returning `{status:"ok"}` (our first real API route)
-- [ ] Security config so that endpoint is publicly reachable (Spring Security currently
-      locks everything by default — you'll learn why the app printed a random password)
-- [ ] CORS config so the browser frontend is allowed to call the backend
-- [ ] Global exception handler (one consistent JSON shape for all errors)
-- [ ] Scaffold the Next.js `frontend/` and have a page fetch `/api/health`
-
-**Demo we're driving toward:** open a web page, see the backend's health status. That's the
-"hello world" that proves both apps and the database all talk to each other.
+**🎉 Milestone 0 complete.** The demo works: open a web page, see the backend's health status —
+proving both apps and the database all talk to each other. The plumbing is solid; **next up is
+Milestone 1 (auth):** register/login, JWT + refresh, and a `GET /api/me` endpoint.
 
 ---
 
@@ -217,6 +434,11 @@ docker compose down -v      # stop it AND delete all data (fresh start)
 # Backend (run from server/)
 ./mvnw test                             # run all tests
 ./mvnw test -Dtest=ServerApplicationTests   # run one test class
-./mvnw spring-boot:run                  # run the backend locally
+./mvnw spring-boot:run                  # run the backend locally (:8080)
 ./mvnw clean package                    # compile + test + build a jar
+
+# Frontend (run from frontend/)
+npm run dev                             # run the Next.js dev server (:3000)
+npm run build                           # production build + full type-check
+npm run lint                            # eslint
 ```
