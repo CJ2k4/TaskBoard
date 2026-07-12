@@ -1,0 +1,4 @@
+-- V1 baseline (M0).
+-- Intentionally empty: establishes the Flyway schema history so later
+-- milestones add real tables as V2+ (M1 introduces app_user, M2 the board
+-- graph, etc.). Do not add schema here — keep migrations milestone-scoped.

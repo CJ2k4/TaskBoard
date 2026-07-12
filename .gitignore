@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Java / Maven build output
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# Logs
+*.log
+
+# Env / secrets
+.env
+.env.local
+
+# Node / Next.js (frontend, once scaffolded)
+node_modules/
+.next/
+out/
