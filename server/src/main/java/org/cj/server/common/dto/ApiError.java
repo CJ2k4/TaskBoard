@@ -1,4 +1,4 @@
-package org.cj.server.common;
+package org.cj.server.common.dto;
 
 import java.time.Instant;
 import java.util.List;

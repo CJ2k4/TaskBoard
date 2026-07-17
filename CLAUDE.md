@@ -8,8 +8,11 @@ TaskBoard is a real-time collaborative Kanban board (shared boards → columns �
 
 ## Current state
 
-- `server/` — Spring Boot backend. Currently a generated skeleton: `ServerApplication` (empty `@SpringBootApplication`), `application.properties` with only the app name, no entities/controllers/migrations yet.
-- Frontend (planned: Next.js App Router) is **not yet scaffolded** — expected as a separate top-level app when M0 lands.
+**M0 and M1 (backend) are done.** M1's frontend half (login/register pages, auth context, protected routes) is the next piece of work.
+
+- `server/` — Spring Boot backend. Postgres wired via `docker-compose.yml`, Flyway migrations `V1__baseline` (empty) + `V2__app_user`. Auth is complete: register/login/refresh returning JWTs, a JWT filter, and `GET /api/me`. Also `GET /api/health` (M0), a global exception handler, and CORS for the Next.js origin.
+- `frontend/` — Next.js App Router app (`src/app`, `src/lib`). Currently renders the backend health status; no auth UI yet.
+- Tokens are returned **in the response body** (access + refresh), not httpOnly cookies — the frontend keeps the access token in memory and calls `/api/auth/refresh`. Google OAuth is deliberately deferred (`app_user.password_hash` is nullable to leave room for it).
 
 ## Backend commands (run from `server/`)
 
@@ -24,12 +27,27 @@ Requires a **JDK 21** on `JAVA_HOME` (`pom.xml` pins `java.version=21`); the bui
 ./mvnw clean package -DskipTests             # build without tests
 ```
 
-**Caveat:** JPA + Flyway + PostgreSQL are on the classpath but `application.properties` has **no datasource configured**. Until a Postgres datasource is set, the Spring context won't fully start, so `spring-boot:run` and the `contextLoads` test will fail. Configuring local Postgres (e.g. via docker-compose) and datasource properties is part of Milestone 0.
+**Postgres must be running** (`docker compose up -d` from the repo root) or the Spring context won't start — `spring-boot:run`, `contextLoads`, and `AuthIntegrationTest` all need a live datasource. `AuthIntegrationTest` boots the whole app and drives every auth endpoint, so a green `./mvnw test` is a strong signal the wiring is intact; it's the safety net to lean on when refactoring.
 
 ## Stack specifics that will bite if unknown
 
 - **Spring Boot 3.5.16 on Java 21.** Standard Boot 3 starters (`spring-boot-starter-web`, `-data-jpa`, `-security`, `-validation`, `-websocket`), with `spring-boot-starter-test` + `spring-security-test` for tests. Flyway is `flyway-core` + `flyway-database-postgresql`; Postgres driver is `runtime` scope.
-- **Base package is `org.cj.server`** (groupId `org.cj`). New code goes under here. The plan's package split (`auth/`, `board/`, `membership/`, `realtime/`, `common/`) should live under `org.cj.server`.
+- **Base package is `org.cj.server`** (groupId `org.cj`). New code goes under here. The plan's package split (`auth/`, `board/`, `membership/`, `realtime/`, `common/`) lives under `org.cj.server`.
+- **Package layout is feature-first, then layered inside each feature.** Follow the shape `auth/` already sets — `board/` and `membership/` must mirror it rather than inventing their own:
+
+  ```
+  org.cj.server.auth
+  ├── entity/       User                     (JPA entities)
+  ├── repository/   UserRepository           (Spring Data)
+  ├── dto/          RegisterRequest, AuthResponse, TokenPair, …
+  ├── service/      AuthService, JwtService  (business logic, HTTP-agnostic)
+  ├── controller/   AuthController, MeController
+  └── security/     SecurityConfig, JwtAuthenticationFilter, AuthPrincipal
+  ```
+
+  `common/` follows the same idea (`exception/`, `dto/`, `controller/`). Everything stays under `org.cj.server`, so `@SpringBootApplication` component-scans it all with no extra config.
+
+  **Dependency direction:** `controller → service → repository → entity`, with `dto` as the shared vocabulary. **A `dto` must never import a `service`** — that's why the token pair is `dto/TokenPair` rather than a record nested in `JwtService`. Mapping DTO↔entity via a static factory on the DTO (`UserResponse.from(user)`) is the accepted pattern here; don't add a `mapper/` layer at this scale.
 - **Database migrations are Flyway** — schema changes go in `src/main/resources/db/migration/` as versioned SQL, never via `ddl-auto`.
 
 ## Architecture decisions to respect (from the scope docs)

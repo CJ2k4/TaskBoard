@@ -1,4 +1,4 @@
-package org.cj.server.common;
+package org.cj.server.common.exception;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;

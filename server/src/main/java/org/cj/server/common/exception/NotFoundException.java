@@ -1,4 +1,6 @@
-package org.cj.server.common;
+package org.cj.server.common.exception;
+
+import org.cj.server.common.dto.ApiError;
 
 /**
  * Thrown by services when a requested resource doesn't exist. The global exception
