@@ -1305,9 +1305,93 @@ owner auto-membership · ✅ Column CRUD (append; block-delete-if-non-empty) · 
 **🎉 Milestone 2 (backend) complete.** A signed-in owner can build and edit a board's whole
 structure over the API, everything persists in rank order, and access is scoped per-owner.
 
-Next: **frontend board UI** (board list, board detail rendering columns/cards, create/rename/
-delete) — the next phase — then **M3** adds drag-and-drop *moves* on top of the ranks we're
-already storing.
+---
+
+### Step 2.7 — The board UI: list, detail, and a card modal · _2026-07-19_
+
+**Goal:** put a real interface on the M2 API — see your boards, open one, and create / rename /
+delete columns and cards, with everything persisting in order. This is the milestone's payoff:
+the app finally *looks* like a Kanban board.
+
+**Files (all new unless noted):**
+
+- `src/lib/boards.ts` — typed client for the board/column/card endpoints.
+- `src/lib/auth-context.tsx` (edited) — added `authFetch` (see below); `src/lib/api.ts`
+  (edited) — exported `apiFetch` so the context can wrap it.
+- `src/app/dashboard/page.tsx` (rewritten) — the board list.
+- `src/app/boards/[id]/page.tsx` — the board detail screen.
+- `src/components/board/` — `board-column-view.tsx`, `card-modal.tsx`, `inline-confirm-button.tsx`.
+
+> **Concepts:** dynamic route segment (`[id]`) · `useParams` · token refresh-on-401 ·
+> optimistic local state from server responses · React portal · lifting state up ·
+> two-step confirm vs `window.confirm` · surfacing a 409 in the UI
+
+**The token that expires while you're working.** M1 left one thread loose: the access token
+lives ~15 minutes, but a board session easily outlasts that. So the first thing M2's frontend
+needed was `authFetch` in the auth context — it attaches the access token, and if a call comes
+back **401**, it silently uses the stored refresh token to get a new access token and *retries
+the request once*. Only if that refresh also fails does it treat you as logged out. The result:
+a token quietly expiring mid-session is invisible to you, exactly as it should be. Every board
+API call goes through it, so this is handled in one place, not sprinkled across components.
+
+**One dynamic page for every board.** The board detail route is `app/boards/[id]/page.tsx`. The
+`[id]` folder name is Next's **dynamic segment** — one file serves `/boards/<any-id>`. Because
+this page is interactive (a Client Component), it reads the id with the `useParams()` hook
+rather than the server-side `params` prop. A bad or non-owned id comes back as a 404, which we
+catch and render as a friendly "Board not found" rather than a crash — the same
+errors-are-values discipline from M1.
+
+**Who owns the board's state?** The board page holds the whole nested board (columns → cards)
+in one piece of React state, and passes *slices* down: each `BoardColumnView` gets its column
+and its cards plus callbacks, but never fetches anything itself. This is "lifting state up" —
+one owner of the truth, children just render and report intent. When a mutation returns the
+updated entity from the server, we splice it into that state (append a created card, replace an
+edited one, drop a deleted one) instead of re-fetching the whole board. Responsive, and it's
+the exact shape M3's drag-and-drop will update.
+
+**The card modal, and why a portal.** Clicking a card opens a modal to edit its title and
+description. It's rendered with `createPortal` to `document.body` — otherwise it'd be nested
+deep inside a column's DOM and could be clipped or mis-stacked by the columns' overflow/scroll.
+A portal lets the component *live* in the React tree (props, state, callbacks all normal) while
+its DOM *renders* at the top level, above everything.
+
+**Deletes confirm in place — deliberately no `window.confirm`.** Every destructive action
+(board, column, card) uses one small `InlineConfirmButton`: the first click swaps it to
+"Confirm? / Cancel". We avoided the native `confirm()` dialog for two reasons — it's a jarring
+OS popup, and (the practical one) a native dialog *blocks the page*, which would freeze the
+automated browser test we use to verify. Building the confirm in React keeps both the UX and
+the test smooth.
+
+**Letting the server's "no" through.** Deleting a column that still has cards is refused by the
+backend with a **409** ("Column is not empty; move or delete its cards first"). The column view
+catches that specific error and shows the server's message inline, right under the column
+header — the UI doesn't second-guess the rule, it just surfaces the server's answer.
+
+**How we verified — the whole loop, in a real browser.** After `npm run build` type-checked all
+routes, we drove the live app end to end: created a board, opened it, added "To Do" / "Done"
+columns and two cards (they render in creation order); opened a card, edited its title +
+description in the modal, saved (reflected on the board); deleted a card via the modal's
+two-step confirm; tried to delete the non-empty column and got the inline 409; **reloaded the
+page and everything persisted in order**; renamed the board inline; deleted the board and got
+bounced back to the dashboard; and deep-linked a bogus board id to confirm the "not found"
+state. Every step behaved.
+
+---
+
+### Where M2 stands
+
+Backend: ✅ `LexoRank` + board graph + Board/Column/Card CRUD + ownership guard + 58 tests.
+
+Frontend: ✅ board list (create/rename/delete) · ✅ board detail with columns + cards ·
+✅ create/rename/delete columns and cards · ✅ card modal (portal) for edit/delete ·
+✅ `authFetch` refresh-on-401 · ✅ inline two-step deletes · ✅ 409 surfaced inline ·
+✅ reload-persists · ✅ verified end-to-end in a real browser.
+
+**🎉 Milestone 2 complete — front to back.** You can build and edit a whole board's structure
+in the browser, and it all persists in rank order.
+
+Next: **M3 — drag-and-drop moves** (the `move` endpoints + `@dnd-kit`), reordering cards within
+and across columns and reordering columns, reconciling to the server's canonical rank.
 
 ---
 

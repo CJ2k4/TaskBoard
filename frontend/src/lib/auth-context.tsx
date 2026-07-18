@@ -26,7 +26,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { authApi, type User } from "@/lib/api";
+import { ApiError, apiFetch, authApi, type User } from "@/lib/api";
 
 const REFRESH_KEY = "taskboard.refreshToken";
 
@@ -37,6 +37,13 @@ type AuthContextValue = {
   user: User | null;
   /** Current access token, or null. Read this when making authenticated calls. */
   getAccessToken: () => string | null;
+  /**
+   * Make an authenticated API call. Attaches the access token, and on a 401 transparently
+   * refreshes once and retries — so a token that expired mid-session doesn't surface as an
+   * error to the caller. If the refresh itself fails, the session is cleared and the error
+   * rethrown (the route guard then redirects to /login).
+   */
+  authFetch: <T>(path: string, init?: RequestInit) => Promise<T>;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
@@ -104,9 +111,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const getAccessToken = useCallback(() => accessTokenRef.current, []);
 
+  /** apiFetch, but with the current access token attached as a Bearer header. */
+  const fetchWithToken = useCallback(
+    <T,>(path: string, init: RequestInit): Promise<T> =>
+      apiFetch<T>(path, {
+        ...init,
+        headers: {
+          ...init.headers,
+          Authorization: `Bearer ${accessTokenRef.current}`,
+        },
+      }),
+    [],
+  );
+
+  const authFetch = useCallback(
+    async <T,>(path: string, init: RequestInit = {}): Promise<T> => {
+      try {
+        return await fetchWithToken<T>(path, init);
+      } catch (err) {
+        // Only a 401 is worth a refresh attempt; anything else is the caller's to handle.
+        if (!(err instanceof ApiError) || err.status !== 401) {
+          throw err;
+        }
+        const stored = localStorage.getItem(REFRESH_KEY);
+        if (!stored) {
+          clearSession();
+          throw err;
+        }
+        try {
+          const res = await authApi.refresh(stored);
+          applySession(res.accessToken, res.refreshToken, res.user);
+        } catch {
+          // The refresh token is dead too — this is a real logout, not a blip.
+          clearSession();
+          throw err;
+        }
+        // Retry once with the freshly minted access token.
+        return fetchWithToken<T>(path, init);
+      }
+    },
+    [fetchWithToken, applySession, clearSession],
+  );
+
   return (
     <AuthContext.Provider
-      value={{ status, user, getAccessToken, login, register, logout }}
+      value={{ status, user, getAccessToken, authFetch, login, register, logout }}
     >
       {children}
     </AuthContext.Provider>

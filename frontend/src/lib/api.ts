@@ -60,7 +60,7 @@ type ApiErrorBody = {
  * so callers only deal with success values plus one error type. A total network failure
  * (backend down) also becomes an `ApiError` with status 0 — never an unhandled rejection.
  */
-async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!API_URL) {
     throw new ApiError(0, "NEXT_PUBLIC_API_URL is not set");
   }
