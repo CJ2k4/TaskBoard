@@ -937,6 +937,380 @@ Next: **M2 — Board / Column / Card CRUD**, starting with the `rankBetween` ord
 
 ---
 
+## Milestone 2 — Board / Column / Card CRUD (single-user)
+
+**Goal of the whole milestone:** a signed-in owner can build and edit a board — create it,
+add columns and cards, rename and delete them — and everything persists in the right order
+across reloads. This is the "get it correct for one user before adding real-time" slice.
+Drag-and-drop *moves* come in M3; roles and sharing in M4; live sync in M5.
+
+We build it back-to-front in the backend first: the ordering primitive, then the data model,
+then CRUD one entity at a time, then the whole-board read. (The browser UI is the phase after.)
+
+### Step 2.1 — The ordering primitive: `rankBetween` · _2026-07-18_
+
+**Goal:** be able to compute a position "between" two others so inserting or moving a card
+never has to renumber its siblings — the single most important decision behind drag-and-drop.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/common/ranking/LexoRank.java`
+- `server/src/main/java/org/cj/server/common/ranking/RankExhaustedException.java`
+- `server/src/test/java/org/cj/server/common/ranking/LexoRankTest.java` (11 tests)
+
+> **Concepts:** fractional / LexoRank-style indexing · lexicographic vs numeric ordering ·
+> base-36 digits · midpoint between two strings · open bounds (`null`) · rank exhaustion &
+> re-balancing · pure function / unit-testability · property/stress testing with a fixed seed
+
+**The problem it solves.** A Kanban board needs an *order* for cards in a column and columns
+on a board. The naive approach — an integer `position` 0,1,2,… — means every insert or move
+has to shift all the siblings after it (and two people dragging at once collide on the same
+number). Instead we give each item a **string `rank`** and sort by it. To drop an item between
+two neighbours, we compute a string that sorts *between* their ranks. No siblings change. This
+is why the schema stores `rank varchar`, not an integer.
+
+**The trick that makes it work.** A rank is read as a fraction in base-36 with an implicit
+"`0.`" in front, using digits `0-9a-z`. Those digits are in ASCII order, so **plain string
+comparison gives the same answer as comparing the numbers** — and a shorter string acts like
+it's padded with the smallest digit. So `between(a, b)` just has to find a base-36 fraction
+strictly between two others: walk the digits, and at the first place they differ, either drop
+in a midpoint digit or — if the two are *adjacent* (like `i` and `j`) — take the lower digit
+and descend one more place, growing the string to make room. `null` bounds mean "open end", so
+`between(null, null)` is the first-ever rank, `between(last, null)` appends, and
+`between(null, first)` prepends.
+
+**Why a hard length cap.** Repeatedly inserting in the *same* spot makes keys grow one digit at
+a time. Rather than loop forever on degenerate input, `between` throws `RankExhaustedException`
+once a key would exceed a length cap — the signal that a column should be *re-balanced*
+(re-spaced). That re-balance is an M3 concern; in M2's modest insert volumes it never trips,
+but wiring the tripwire now keeps the primitive honest.
+
+**Why it's a pure static function.** `LexoRank.between` takes strings and returns a string —
+no Spring, no database, no clock. That makes it trivial to test in isolation and to reason
+about, which matters because *everything* leans on it.
+
+**How we verified — the point of this step.** `LexoRankTest` asserts the core invariant
+(`prev < result < next`) across every shape: first/append/prepend, adjacent digits, shared
+prefixes. The two that matter most:
+
+- a **randomized stress test** — 2000 insertions at random positions (including both ends),
+  seeded for reproducibility, asserting the result is strictly between its neighbours *every
+  time* and the whole list stays strictly sorted and duplicate-free; and
+- an **exhaustion test** proving the length cap trips (`RankExhaustedException`) instead of
+  hanging on adversarial input.
+
+```bash
+cd server
+./mvnw test -Dtest=LexoRankTest   # 11 passing, incl. a 2000-insert property test
+```
+
+All green. With a trustworthy ordering primitive in hand, we can build the data model that
+uses it.
+
+### Step 2.2 — The board graph: migration, entities, repositories · _2026-07-18_
+
+**Goal:** create the four tables that hold a board's structure — `board`, `board_membership`,
+`board_column`, `card` — and the Java objects to read and write them. This is the data
+foundation the CRUD steps sit on.
+
+**Files:**
+
+- `server/src/main/resources/db/migration/V3__board_graph.sql`
+- `server/src/main/java/org/cj/server/board/entity/{Board,BoardMembership,BoardColumn,Card,Role,MembershipStatus}.java`
+- `server/src/main/java/org/cj/server/board/repository/{Board,BoardMembership,BoardColumn,Card}Repository.java`
+
+> **Concepts:** one-migration-per-milestone · foreign keys & cascade rules (`ON DELETE
+> CASCADE` vs `RESTRICT`) · `CHECK` constraints for enums · partial unique index ·
+> denormalization · reserved-word table names · JPA `@Enumerated(STRING)` · FK-as-plain-UUID
+> vs `@ManyToOne` · derived query methods
+
+**One migration for the whole graph.** Back in Step 0.3 the baseline migration's comment
+reserved M2 for "the board graph", so all four tables land together in `V3__board_graph.sql`
+rather than dribbling out one per sub-step. The columns/types/constraints come straight from
+`project-scope.md § Data`. The details that matter:
+
+- **Cascade rules encode the delete policy.** Everything under a board — memberships, columns,
+  cards — is `ON DELETE CASCADE`, so deleting a board cleans up its whole subtree in the DB.
+  But `board.owner_id → app_user` is `ON DELETE RESTRICT`: you can't delete a user who still
+  owns boards. The database enforces this regardless of any bug in our code.
+- **Enums are strings with a `CHECK`.** `role` and `status` are `varchar(16)` guarded by
+  `CHECK (role IN ('OWNER','EDITOR','VIEWER'))` etc. — never integer ordinals, because
+  reordering a Java enum must never silently corrupt stored data.
+- **A partial unique index** enforces "no duplicate *pending* invites":
+  `UNIQUE (board_id, invited_email) WHERE status = 'PENDING'`. It only constrains pending
+  rows — a clever, precise use of Postgres you'll want to recognize.
+- **`card.board_id` is denormalized on purpose** (a card already reaches its board via its
+  column). Storing it directly lets board-scoped reads and auth checks skip a join; the cost is
+  we must keep it correct on cross-column moves (M3).
+- **Reserved-word table names**: `board_column` (not `column`), consistent with `app_user`.
+
+**The entities mirror `User` exactly.** Each is a plain JPA `@Entity` with an app-generated
+`UUID` id (no `@GeneratedValue`), a `protected` no-arg constructor for Hibernate, a `private`
+all-args constructor, and a static `create(...)` factory that stamps `createdAt`/`updatedAt`.
+Two deliberate style choices:
+
+- **Foreign keys are plain `UUID` fields** (`ownerId`, `boardId`, `columnId`), not
+  `@ManyToOne` associations. At this scale that's simpler, avoids lazy-loading surprises, and
+  fits the denormalized-id approach the schema already takes.
+- **Mutations live on the entity** (`board.rename(...)`, `card.edit(...)`) and bump
+  `updatedAt` themselves, so a service can never forget to. `updatedAt` is also the
+  last-write-wins key real-time will use in M5.
+- The Java type is `BoardColumn` (not `Column`) to avoid colliding with JPA's own `@Column`
+  annotation — a small but real gotcha of the reserved-word mapping.
+
+**The repositories** are Spring Data interfaces — method names generate the queries. M2 needs
+just a handful: `findByOwnerIdOrderByCreatedAtDesc` (a user's boards),
+`findByBoardIdOrderByRankAsc` (columns/cards in order), `findFirstBy…OrderByRankDesc` (the last
+sibling, whose rank is the lower bound when appending), and `existsByColumnId` (to block
+deleting a non-empty column).
+
+**How we verified.** The migration + mappings are proved by *booting the app*: Flyway applies
+`V3`, then — because `ddl-auto=validate` (Step 0.2) — Hibernate checks all four entities match
+the new tables, refusing to start on any mismatch.
+
+```bash
+cd server
+./mvnw test -Dtest=ServerApplicationTests
+# log: "Successfully applied 1 migration ... now at version v3" + BUILD SUCCESS
+```
+
+The context came up clean at `v3`: tables exist, mappings agree. Next we put them to work with
+the first CRUD surface — boards.
+
+### Step 2.3 — Board CRUD + the ownership guard · _2026-07-18_
+
+**Goal:** let a signed-in user create, list, view, rename, and delete their own boards — and
+make sure one user can never touch another's. This introduces the access pattern every later
+board-scoped operation reuses.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/common/exception/ForbiddenException.java` (+ a 403 handler
+  in `GlobalExceptionHandler`)
+- `server/src/main/java/org/cj/server/board/dto/{CreateBoardRequest,UpdateBoardRequest,BoardResponse}.java`
+- `server/src/main/java/org/cj/server/board/service/BoardService.java`
+- `server/src/main/java/org/cj/server/board/controller/BoardController.java`
+- `server/src/test/java/org/cj/server/board/BoardIntegrationTest.java` (7 tests)
+
+> **Concepts:** REST resource design · the service guard pattern · resource ownership /
+> authorization · 404-vs-403 and not leaking existence · transactional multi-row writes ·
+> `@AuthenticationPrincipal` → service · DB cascade on delete
+
+**The shape.** `BoardController` is thin, exactly like `AuthController`: it reads the caller
+from `@AuthenticationPrincipal AuthPrincipal`, `@Valid`-ates the body, and hands
+`me.userId()` plus the data to `BoardService`. Five routes — `POST` (201), `GET` list,
+`GET /{id}`, `PATCH /{id}` (rename), `DELETE /{id}` (204). No `SecurityConfig` change was
+needed: `anyRequest().authenticated()` from M1 already locks every new `/api/boards` route, so
+the "create requires auth → 401" test passes for free.
+
+**The idea worth internalizing: one guard, reused everywhere.**
+`BoardService.requireOwnedBoard(boardId, userId)` loads the board and asserts the user may
+access it, or throws. *Every* board-scoped operation funnels through it — and so will the
+column and card services in the next steps. Centralizing the check means authorization can't be
+accidentally forgotten on one endpoint, and when M4 upgrades it from "owns" to "has a
+sufficient membership role", every operation upgrades at once.
+
+**Why not-yours returns 404, not 403.** The guard throws `NotFoundException` for both a missing
+board *and* a board owned by someone else. Returning 403 would confirm the board exists; 404
+reveals nothing. (We still added `ForbiddenException`/403 to the toolkit — it's the right code
+for M4's "you're a member but a *viewer*, so you can't edit". The two coexist: non-members get
+404, under-privileged members get 403.)
+
+**Create writes two rows atomically.** `create` saves the `Board` **and** the owner's
+`OWNER`/`ACTIVE` `BoardMembership` in one `@Transactional` method — either both land or neither
+does. We write that membership now, before anything reads it, purely so M4's switch to
+membership-based auth needs no data backfill. **Delete** just removes the board row and lets the
+DB `ON DELETE CASCADE` (from `V3`) sweep the memberships/columns/cards — the test confirms the
+owner's membership row vanishes afterward.
+
+**How we verified.** `BoardIntegrationTest` boots the real app and drives the endpoints with a
+real token (from registering): create returns the board *and* the owner-membership row exists;
+list returns only the caller's boards; a second user gets 404 on GET/PATCH/DELETE of a board
+they don't own; rename persists across a re-GET; delete → 204 then 404 and the membership
+cascade; unauthenticated → 401; blank name → 400.
+
+```bash
+cd server
+./mvnw test -Dtest=BoardIntegrationTest   # 7 passing
+```
+
+All green. With boards and a reusable access guard in place, columns slot in on top.
+
+### Step 2.4 — Column CRUD (append by rank; block deleting non-empty) · _2026-07-18_
+
+**Goal:** add, rename, and delete a board's columns — with new columns landing at the end in a
+stable order, and a guard against accidentally deleting a column full of cards.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/board/dto/{CreateColumnRequest,UpdateColumnRequest,ColumnResponse}.java`
+- `server/src/main/java/org/cj/server/board/service/ColumnService.java`
+- `server/src/main/java/org/cj/server/board/controller/ColumnController.java`
+- `server/src/test/java/org/cj/server/board/ColumnIntegrationTest.java` (6 tests)
+
+> **Concepts:** appending with a fractional rank · server-authoritative ordering · nested vs
+> flat REST routes · reusing an authorization guard across services · guard-rail delete (block
+> vs cascade)
+
+**Ordering starts here — even without drag.** When you create a column we **append** it: read
+the current last column (`findFirstByBoardIdOrderByRankDesc`), take its rank as the lower bound,
+and compute the new rank with `LexoRank.between(lastRank, null)` (Step 2.1). The very first
+column uses `between(null, null)`. The client never sends a rank — **the server is the
+authority**, which is the invariant that lets M3's drag-and-drop drop in later without changing
+anything about how data is stored. The test asserts three appends come back with strictly
+increasing ranks.
+
+**Authorization is free here.** `ColumnService` doesn't re-implement any access check — it
+calls `boardService.requireOwnedBoard(...)` (from Step 2.3). A column is only reachable through
+a board, so "can this user touch this column?" reduces to "does this user own its board?". A
+stranger creating/renaming/deleting hits 404, and creating a column under a non-existent board
+is 404 — all for free, because the guard lives in one place.
+
+**Route shape.** Create is **nested** — `POST /api/boards/{boardId}/columns` — because a new
+column needs its parent board in the URL. Rename and delete address the column **directly** by
+its own id (`/api/columns/{id}`), since the id is globally unique and the service resolves the
+board from it. This "create-under-parent, mutate-by-id" split is a common, tidy REST shape.
+
+**Delete blocks instead of cascading.** The DB *would* cascade-delete a column's cards, but
+that's dangerous — one click could silently vaporize a lot of work. So the service checks
+`cards.existsByColumnId(...)` and throws a **409 `ConflictException`** if the column isn't
+empty, forcing the user to clear it first. This is a deliberate case where the *application*
+rule is stricter than the *database* rule.
+
+**How we verified.** `ColumnIntegrationTest` drives it over HTTP: appends yield increasing
+ranks; rename persists; deleting an empty column works; deleting a non-empty one is 409; a
+non-owner gets 404 on every route; a missing board is 404. The non-empty case seeds a card
+straight through `CardRepository` (card *endpoints* don't exist until the next step) — a handy
+reminder that the persistence layer is usable independently of the web layer.
+
+```bash
+cd server
+./mvnw test -Dtest=ColumnIntegrationTest   # 6 passing
+```
+
+All green. Cards are the same shape one level down — and introduce the denormalized `board_id`.
+
+### Step 2.5 — Card CRUD (append by rank; keep `board_id` in sync) · _2026-07-18_
+
+**Goal:** add, edit, and delete cards within a column — the last write surface of the board.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/board/dto/{CreateCardRequest,UpdateCardRequest,CardResponse}.java`
+- `server/src/main/java/org/cj/server/board/service/CardService.java`
+- `server/src/main/java/org/cj/server/board/controller/CardController.java`
+- `server/src/test/java/org/cj/server/board/CardIntegrationTest.java` (6 tests)
+
+> **Concepts:** denormalization kept correct *by construction* · append via rank (again) ·
+> optional fields · reusing the board guard a level deeper · consistent REST shape
+
+**Almost identical to columns — on purpose.** `CardService` mirrors `ColumnService`: append a
+new card with `LexoRank.between(lastCardInColumn, null)`, authorize through
+`boardService.requireOwnedBoard(...)`, mutate-by-id for edit/delete, nested create under the
+parent (`POST /api/columns/{columnId}/cards`). Consistency is a feature — once you understand
+one CRUD surface here, you understand them all.
+
+**The one genuinely new idea: the denormalized `board_id`.** A card stores *both* its
+`columnId` and its `boardId`, even though the board is reachable via the column (Step 2.2). The
+trick is *where* the value comes from: on create we read it **from the column**
+(`column.getBoardId()`) rather than trusting any client input — so the denormalized copy is
+correct *by construction* and can't drift. That copy is what makes the next step's whole-board
+read a single query instead of a join. (When M3 moves a card to another column, that same field
+must be re-synced — the reason it's called out as a moving part.)
+
+**Edit is last-write-wins-ready.** `card.edit(title, description)` replaces both editable
+fields and bumps `updatedAt` — the timestamp M5 will use to resolve concurrent edits. Nothing
+special to do now; we just have to keep bumping it, which the entity does for us.
+
+**How we verified.** `CardIntegrationTest`: two appends come back with increasing ranks *and*
+the correct `boardId`/`columnId`; edit persists title + description; delete → 204; a non-owner
+gets 404 on create/edit/delete; a missing column is 404; blank title is 400.
+
+```bash
+cd server
+./mvnw test -Dtest=CardIntegrationTest   # 6 passing
+```
+
+All green. Every write path exists. The last piece is the read that returns a whole board at
+once — and it's where the denormalized `board_id` pays off.
+
+### Step 2.6 — The whole-board read: `GET /api/boards/{id}` · _2026-07-18_
+
+**Goal:** return an entire board — its columns, each with its cards, all in order — in one
+response, so the frontend can render everything from a single fetch.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/board/dto/BoardDetailResponse.java` (nested read model)
+- `server/src/main/java/org/cj/server/board/service/BoardService.java` (`getDetail` + two repos)
+- `server/src/main/java/org/cj/server/board/controller/BoardController.java` (`GET /{id}` now returns detail)
+- `server/src/test/java/org/cj/server/board/BoardDetailIntegrationTest.java` (2 tests)
+
+> **Concepts:** aggregate / read model (a DTO shaped for the screen, not the tables) · nested
+> records · grouping in memory · where the denormalization pays off (one query, no join) ·
+> preserving sort order through a group-by
+
+**A response shaped for the UI, not the schema.** `BoardDetailResponse` is a *read model*: the
+board's fields plus a `List<ColumnWithCards>`, where each `ColumnWithCards` pairs a column with
+its ordered cards. It doesn't mirror any single table — it mirrors what the board *looks like*.
+Building a dedicated DTO for a read is a common and healthy move; don't force the screen to
+match the storage layout.
+
+**Two queries, no joins — the denormalization dividend.** `getDetail` loads the columns
+(`findByBoardIdOrderByRankAsc`) and **all** the board's cards in one shot
+(`cards.findByBoardIdOrderByRankAsc`) — possible only because every card carries its
+`board_id` directly (Step 2.2/2.5). Without that denormalized column we'd have to fetch cards
+per-column or join through columns. Then we group the flat card list by `columnId` in memory.
+
+**The ordering subtlety worth noticing.** The cards come back sorted by rank *globally*, and
+we group them preserving encounter order (a `LinkedHashMap` + append). Because filtering a
+rank-sorted list down to one column yields exactly that column's cards in rank order, each
+column's `cards` list is correctly ordered **without a second sort**. Small detail, satisfying
+when you see why it holds.
+
+`GET /api/boards/{id}` now returns this detail view (replacing the flat `BoardResponse` from
+2.3); the list endpoint still returns the lightweight summaries.
+
+**How we verified — tests *and* the real thing.** `BoardDetailIntegrationTest` builds a board
+with two columns and three cards and asserts the nested shape and both ordering levels, plus an
+empty board returning an empty `columns` array. Then, per this project's habit, we drove the
+**running jar** end-to-end with `curl`: register → create board → two columns → three cards →
+`GET /api/boards/{id}`, which returned exactly the nested, rank-ordered structure (columns
+`i` < `r`, cards `i` < `r` within a column), followed by non-empty-column delete → 409, board
+delete → 204, and a final GET → 404.
+
+```bash
+cd server
+./mvnw test          # whole suite: 58 passing
+# (live smoke: build the jar, run it, curl the create→read→delete flow — all statuses matched)
+```
+
+> **A real gotcha we hit, worth remembering.** The first live smoke test returned `500`s — but
+> the tests were green. The cause: a **stale server from an earlier run was still holding port
+> 8080**, so the freshly built jar silently failed to start ("Port 8080 was already in use")
+> and our `curl`s were hitting the *old* process. Lesson: when the live app disagrees with a
+> green test suite, suspect *what's actually running* before the code. `lsof -nP -iTCP:8080
+> -sTCP:LISTEN` shows who owns the port; kill it and relaunch.
+
+---
+
+### Where M2 stands
+
+Done (backend): ✅ `LexoRank` ordering util (+ 2000-insert property test) · ✅ board-graph
+migration `V3` + entities + repositories · ✅ Board CRUD with a reusable ownership guard +
+owner auto-membership · ✅ Column CRUD (append; block-delete-if-non-empty) · ✅ Card CRUD
+(append; denormalized `board_id` kept correct) · ✅ whole-board aggregate read · ✅ **58 tests**
++ live curl smoke.
+
+**🎉 Milestone 2 (backend) complete.** A signed-in owner can build and edit a board's whole
+structure over the API, everything persists in rank order, and access is scoped per-owner.
+
+Next: **frontend board UI** (board list, board detail rendering columns/cards, create/rename/
+delete) — the next phase — then **M3** adds drag-and-drop *moves* on top of the ranks we're
+already storing.
+
+---
+
 ## Quick command reference
 
 ```bash

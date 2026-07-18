@@ -56,6 +56,15 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 403 — the user is authenticated but not allowed to perform this action (e.g. a
+     * non-owner mutating a board). Client-caused and expected, so no error-level logging.
+     */
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<ApiError> handleForbidden(ForbiddenException ex, HttpServletRequest request) {
+        return build(HttpStatus.FORBIDDEN, ex.getMessage(), request);
+    }
+
+    /**
      * 401 — login failed. We deliberately return one generic message for both "no such
      * email" and "wrong password": revealing which one was wrong lets an attacker probe
      * for which emails have accounts (user enumeration).
