@@ -8,11 +8,11 @@ TaskBoard is a real-time collaborative Kanban board (shared boards → columns �
 
 ## Current state
 
-**M0 and M1 (backend) are done.** M1's frontend half (login/register pages, auth context, protected routes) is the next piece of work.
+**M0 and M1 are done, front to back.** Next up is M2 (Board/Column/Card CRUD), starting with the `rankBetween` ordering utility.
 
 - `server/` — Spring Boot backend. Postgres wired via `docker-compose.yml`, Flyway migrations `V1__baseline` (empty) + `V2__app_user`. Auth is complete: register/login/refresh returning JWTs, a JWT filter, and `GET /api/me`. Also `GET /api/health` (M0), a global exception handler, and CORS for the Next.js origin.
-- `frontend/` — Next.js App Router app (`src/app`, `src/lib`). Currently renders the backend health status; no auth UI yet.
-- Tokens are returned **in the response body** (access + refresh), not httpOnly cookies — the frontend keeps the access token in memory and calls `/api/auth/refresh`. Google OAuth is deliberately deferred (`app_user.password_hash` is nullable to leave room for it).
+- `frontend/` — Next.js 16 App Router app (`src/app`, `src/lib`, `src/components`). Auth UI is complete: register/login pages, an `AuthProvider` context, a `<Protected>` route guard, and a dashboard. Landing page (`/`) still shows the backend health status.
+- Tokens are returned **in the response body** (access + refresh), not httpOnly cookies. Frontend keeps the **access token in memory** and the **refresh token in `localStorage`**, bootstrapping the session from it on load; the browser calls the backend directly, so client-side auth calls use `NEXT_PUBLIC_API_URL` (the health check still uses the server-only `API_BASE_URL`). Google OAuth is deliberately deferred (`app_user.password_hash` is nullable to leave room for it).
 
 ## Backend commands (run from `server/`)
 

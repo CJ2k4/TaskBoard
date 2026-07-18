@@ -825,11 +825,115 @@ Done: ✅ `app_user` table + `User` entity · ✅ BCrypt hashing + register/logi
 **🎉 Milestone 1 (backend) complete.** Register → log in → call an authenticated endpoint all
 work, statelessly, over real HTTP.
 
-Deferred within M1 (optional / later):
+---
+
+### Step 1.6 — The frontend auth flow: forms, context, protected routes · _2026-07-18_
+
+**Goal:** make the browser actually *use* the auth API. Register and login pages, a place to
+keep the logged-in session, and a dashboard you can only reach when logged in — the milestone's
+demo: register → log in → land on an authenticated dashboard.
+
+**Files (all new unless noted):**
+
+- `src/lib/api.ts` — typed browser client for `register/login/refresh/me`; an `ApiError`
+  class carrying the backend's status + message + field errors.
+- `src/lib/auth-context.tsx` — `AuthProvider` + `useAuth()`; the session state machine.
+- `src/components/protected.tsx` — the redirect gate for logged-in-only pages.
+- `src/app/login/page.tsx` · `register/page.tsx` · `dashboard/page.tsx` — the three screens.
+- `src/app/layout.tsx` (edited) — wraps the app in `<AuthProvider>`.
+- `src/app/page.tsx` (edited) — landing page: kept the M0 health card, added auth links.
+- `.env.local` / `.env.example` (edited) — added `NEXT_PUBLIC_API_URL`.
+
+> **Concepts:** Server vs Client Components · `"use client"` boundary · React Context ·
+> `NEXT_PUBLIC_` env vars · in-memory vs persisted tokens · token bootstrap on reload ·
+> three-state auth machine · protected routes · CORS · controlled inputs
+
+**Server code can't hold your login — so this half lives in the browser.** M0's health check
+runs on the *server* during render (`src/lib/health.ts`, server-only `API_BASE_URL`). Auth is
+the opposite: the access token lives in the browser's memory, so the code that holds it and
+attaches it to requests must run in the browser too. That's the `"use client"` directive at
+the top of the context and pages — it marks the boundary where server-rendering stops and
+interactive, stateful React begins. Because these calls now leave the browser and hit a
+*different* origin (`:3000` → `:8080`), they need the backend's CORS allowance (already set in
+M1) and a **browser-visible** URL: `NEXT_PUBLIC_API_URL`. The `NEXT_PUBLIC_` prefix is a
+deliberate opt-in — Next strips every other env var out of the client bundle so secrets can't
+leak; this one is just a public URL, so it's fine to ship.
+
+**Where the tokens live — the trade-off, made concrete.**
+
+- **Access token → memory only** (a React ref). Short-lived, and gone the instant you reload.
+  That's *good*: a credential sent on every request shouldn't sit on disk.
+- **Refresh token → `localStorage`.** This is the one that survives a reload, so on the next
+  visit the app can trade it for a new access token and keep you logged in.
+
+The cost: `localStorage` is readable by any JavaScript on the page, so a script-injection (XSS)
+bug could steal the refresh token. The more secure option is an **httpOnly cookie** (invisible
+to JS), but that needs cookie/CSRF plumbing we skipped to keep the learning curve gentle. Worth
+knowing this is the deliberate soft spot, and the thing a real deployment would harden first.
+
+**The three-state session — and why "loading" earns its place.** The natural instinct is a
+boolean: logged in, or not. But there's a third state that matters. On a fresh page load we
+have a refresh token in storage but don't *yet* know if it's still valid — verifying means an
+async round-trip to `/api/auth/refresh`. So the machine is:
+
+```
+loading         ← just mounted; trying to restore the session from the stored refresh token
+authenticated   ← we have a user + access token
+unauthenticated ← no token, or the stored one was rejected
+```
+
+Without the `loading` state, the dashboard's guard would look at that first render — user still
+null — and instantly bounce a *logged-in* person to `/login`, only for the refresh to succeed a
+moment later. The guard (`<Protected>`) instead waits: it shows "Loading…" until the bootstrap
+resolves, redirects only on a definite `unauthenticated`, and renders the page only on
+`authenticated`. The redirect lives in a `useEffect`, not in render, because navigation is a
+side effect — changing routes while React is drawing is not allowed.
+
+**Errors are values here, not surprises.** `api.ts` turns every non-2xx into one thrown
+`ApiError` carrying the HTTP status, so a form can branch cleanly: a 400 spreads its
+`fieldErrors` under the matching inputs, a 409 shows "email already registered", a 401 shows
+"invalid email or password" — and a total network failure becomes status `0`, "Can't reach the
+server", instead of an unhandled promise rejection. The sad path is part of the feature.
+
+**How we verified — drove the real browser, not just the types.** After `npm run build`
+type-checked all five routes, we clicked through every branch against the live backend:
+
+1. Register → landed on `/dashboard` as the new user. ✅
+2. **Reloaded `/dashboard` → still logged in** — proof the localStorage→refresh→me bootstrap
+   works. ✅
+3. Logged out → sent to `/login`; hitting `/dashboard` by hand while logged out → bounced. ✅
+4. Logged back in with the right password → dashboard. ✅
+5. Wrong password → inline "Invalid email or password" (401), no crash. ✅
+6. Duplicate email → inline "Email already registered" (409). ✅
+7. Stopped the backend, tried to log in → friendly "Can't reach the server", not a hang. ✅
+
+> **A gotcha worth remembering:** programmatically *setting* an input's value (the way some
+> automation tools do) doesn't fire React's `onChange`, so the controlled state stays empty and
+> the form submits nothing. Real keystrokes do fire it. A neat reminder that in React the state
+> is the source of truth, not what the DOM element visibly shows.
+
+---
+
+### Where M1 stands
+
+Backend: ✅ `app_user` + `User` · ✅ BCrypt + register/login service · ✅ JWT issue/verify ·
+✅ JWT filter + security wiring · ✅ `register|login|refresh` + `/api/me` · ✅ 26 tests ·
+✅ layered packages.
+
+Frontend: ✅ register/login pages · ✅ auth context (in-memory access + localStorage refresh) ·
+✅ protected dashboard + redirect guard · ✅ reload-survives-login · ✅ friendly error states ·
+✅ verified end-to-end in a real browser.
+
+**🎉 Milestone 1 complete — front to back.** A person can create an account in the browser, log
+in, land on an authenticated dashboard, and stay logged in across reloads.
+
+Deferred (optional / later):
 
 - [ ] Google OAuth login (email/password already unblocks everything else — the plan lets this slip).
-- [ ] Frontend register/login pages + token storage + protected-route redirect (next, honoring
-      `frontend/AGENTS.md`'s "read the Next.js docs first" note).
+- [ ] Silent access-token auto-refresh on mid-session 401s (bootstrap-on-load is enough for now;
+      the reusable retry belongs with M2's authenticated data calls).
+
+Next: **M2 — Board / Column / Card CRUD**, starting with the `rankBetween` ordering utility.
 
 ---
 

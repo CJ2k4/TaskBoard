@@ -1,8 +1,10 @@
+import Link from "next/link";
+
 import { checkBackendHealth } from "@/lib/health";
 
-// Server Component: fetches during render for a fast first paint (no client
-// round-trip, no CORS preflight). This is the M0 "hello world" proving the
-// browser, backend, and database all talk to each other.
+// Public landing. Stays a Server Component: it fetches the backend health during render
+// (server-to-server, no CORS) for a fast first paint, and links into the auth flow. The
+// health card is the M0 artifact — kept as a live "is everything wired?" indicator.
 export default async function Home() {
   const health = await checkBackendHealth();
 
@@ -13,18 +15,33 @@ export default async function Home() {
           TaskBoard
         </h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Milestone 0 — plumbing check
+          Real-time collaborative Kanban.
         </p>
 
-        <div className="mt-6 flex items-center justify-center gap-2">
+        <div className="mt-6 flex flex-col gap-3">
+          <Link
+            href="/login"
+            className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            Log in
+          </Link>
+          <Link
+            href="/register"
+            className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+          >
+            Create account
+          </Link>
+        </div>
+
+        <div className="mt-6 flex items-center justify-center gap-2 border-t border-zinc-100 pt-4 dark:border-zinc-800">
           <span
-            className={`inline-block h-2.5 w-2.5 rounded-full ${
+            className={`inline-block h-2 w-2 rounded-full ${
               health.ok ? "bg-green-500" : "bg-red-500"
             }`}
             aria-hidden
           />
           <span
-            className={`text-sm font-medium ${
+            className={`text-xs font-medium ${
               health.ok
                 ? "text-green-700 dark:text-green-400"
                 : "text-red-700 dark:text-red-400"
