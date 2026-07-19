@@ -104,3 +104,18 @@ export const updateCard = (
 
 export const deleteCard = (authFetch: AuthFetch, id: string) =>
   authFetch<void>(`/api/cards/${id}`, { method: "DELETE" });
+
+/**
+ * A card move expressed as *intent*, mirroring the backend's `MoveCardRequest`. The card goes
+ * into `targetColumnId` (possibly its current one); `afterCardId` wins if both anchors are set,
+ * and neither anchor means "append to the end". The client never computes a rank — the server
+ * resolves the neighbours against its own order and returns the canonical `rank` to reconcile to.
+ */
+export type MoveCardBody = {
+  targetColumnId: string;
+  beforeCardId?: string;
+  afterCardId?: string;
+};
+
+export const moveCard = (authFetch: AuthFetch, id: string, body: MoveCardBody) =>
+  authFetch<Card>(`/api/cards/${id}/move`, { method: "PATCH", ...json(body) });

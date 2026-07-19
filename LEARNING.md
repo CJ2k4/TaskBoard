@@ -1580,9 +1580,83 @@ canonical rank; cross-column with `board_id` intact; exhaustion → re-space →
 ✅ `PATCH /api/columns/{id}/move` · ✅ **75 tests** + live curl smoke.
 
 **🎉 Milestone 3 backend complete.** Every reorder a drag can express is now a one-request,
-server-authoritative write. Deferred to the next phase: the **`@dnd-kit` frontend** — drag
-cards/columns in the browser, optimistic local move, reconcile to the server's returned rank.
-(Real-time broadcast of moves is M5; roles beyond owner are M4.)
+server-authoritative write.
+
+---
+
+### Step 3.4 — Dragging cards in the browser (`@dnd-kit`, Pass A) · _2026-07-19_
+
+**Goal:** actually *drag* cards — reorder within a column and move across columns — with the
+board updating instantly and then reconciling to the server's canonical rank. (Dragging whole
+columns is a deliberate Pass B; cards are the higher-value interaction, verified first.)
+
+**Files (all new unless noted):**
+
+- `src/components/board/sortable-card.tsx` — a card wrapped in `@dnd-kit`'s `useSortable`,
+  plus a shared `CardFace` for the drag preview.
+- `src/components/board/board-column-view.tsx` (edited) — cards wrapped in a `SortableContext`;
+  the card area made a droppable so empty columns accept drops.
+- `src/app/boards/[id]/page.tsx` (edited) — the `DndContext`, sensors, drag handlers, the
+  optimistic move + reconcile + rollback, and the `DragOverlay`.
+- `src/lib/boards.ts` (edited) — `moveCard` + `MoveCardBody`.
+- `package.json` — added `@dnd-kit/core`, `/sortable`, `/utilities`.
+
+> **Concepts:** drag intent vs rank · optimistic UI · reconcile-to-server · snapshot rollback ·
+> `@dnd-kit` DndContext / SortableContext / useSortable / DragOverlay · droppable containers ·
+> pointer activation distance (click vs drag) · collision detection
+
+**Move as intent, never a rank — the frontend's half of a decision made back in M2.** The client
+does *not* compute a LexoRank. On drop it sends *where* the card landed —
+`{ targetColumnId, afterCardId }` (or `beforeCardId`, or neither = append) — and the server
+returns the canonical `rank`. So the browser only ever describes intent; the server stays the
+single source of truth on ordering. This is why nothing about the client changes when real-time
+arrives in M5: everyone's already reconciling to the server.
+
+**Optimistic, then reconcile.** A drag that waits for the network feels broken. So on drop we
+*immediately* rewrite local state to the new order (the card jumps to where you dropped it),
+then fire the move request in the background. When it returns we splice the server's version of
+that card back in — same position, but now with the authoritative `rank`/`updatedAt` for the
+*next* drag. If the request fails, we restore a **snapshot** taken at drag start and show an
+error banner: the board snaps back to exactly what it was. (Because every state update is
+immutable, that snapshot's arrays stay untouched while we optimistically replace them — a quiet
+payoff of never mutating in place.)
+
+**One knob that makes click *and* drag both work: activation distance.** A card is clickable
+(opens the modal) *and* draggable. Those fight unless you tell the pointer sensor "don't start a
+drag until the pointer has moved ~8px." A plain click never crosses that threshold, so it falls
+through to `onClick`; a real drag does. One number resolves the whole ambiguity.
+
+**Dropping into an empty column.** `@dnd-kit`'s sortable only knows about *cards*, so an empty
+column has nothing to sort against. The fix: make each column's card area a **droppable** keyed
+by the column id. When you drop over empty space, the collision result is the column id → we
+append. Over a card → we read that card's index and insert there.
+
+**A verification catch worth keeping.** The first drag failed with the board snapping back and
+an error banner. The frontend was fine — the *running backend was stale*: it had been started
+before the M3 move endpoints existed, so `PATCH /api/cards/{id}/move` hit "no such route" and
+404'd. Restarting the backend fixed it instantly. Two lessons: (1) `spring-boot:run` doesn't
+hot-reload new endpoints — restart after backend changes; (2) the failure accidentally *proved*
+the rollback path — the optimistic move reverted cleanly and surfaced the error, exactly as
+designed.
+
+**How we verified — real drags in a real browser.** After `npm run build`, we drove it: clicked
+a card (modal still opened — activation distance intact); dragged a card down within a column;
+dragged a card into the empty column (append); dragged a card above a specific card in another
+column (insert-before); and **reloaded after each — every order persisted server-side.** The
+rollback path we saw for real via the stale-backend catch above.
+
+---
+
+### Where M3 stands
+
+Backend: ✅ move endpoints (intent → canonical rank, cross-column, exhaustion re-space) · 75 tests.
+
+Frontend (Pass A): ✅ drag cards within a column · ✅ drag cards across columns (incl. into an
+empty one) · ✅ optimistic move + reconcile to server rank · ✅ snapshot rollback on failure ·
+✅ click-still-opens-modal (activation distance) · ✅ verified end-to-end in a real browser.
+
+Next: **Pass B — dragging columns** (`PATCH /api/columns/{id}/move`, horizontal sortable), then
+**M4** (roles/sharing) before **M5** (real-time).
 
 ---
 

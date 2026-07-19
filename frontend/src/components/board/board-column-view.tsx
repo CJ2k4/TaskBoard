@@ -1,10 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import { useDroppable } from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 
 import { ApiError } from "@/lib/api";
 import type { Card, Column } from "@/lib/boards";
 import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
+import { SortableCard } from "@/components/board/sortable-card";
 
 /**
  * One column on the board: a header (rename / delete), its cards in rank order, and a composer
@@ -30,6 +33,13 @@ export function BoardColumnView({
   onCreateCard: (title: string) => Promise<void>;
   onCardClick: (card: Card) => void;
 }) {
+  // The card area is a drop target keyed by column id, so a card can be dropped into this
+  // column even when it's empty (there are no cards to sort against).
+  const { setNodeRef: setDropRef } = useDroppable({
+    id: column.id,
+    data: { type: "column", columnId: column.id },
+  });
+
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(column.title);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -107,18 +117,20 @@ export function BoardColumnView({
         <p className="mb-2 text-xs text-red-600 dark:text-red-400">{deleteError}</p>
       )}
 
-      <div className="flex flex-col gap-2">
-        {cards.map((card) => (
-          <button
-            key={card.id}
-            type="button"
-            onClick={() => onCardClick(card)}
-            className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-left text-sm text-zinc-800 shadow-sm transition hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:border-zinc-700"
-          >
-            {card.title}
-          </button>
-        ))}
-      </div>
+      <SortableContext
+        items={cards.map((c) => c.id)}
+        strategy={verticalListSortingStrategy}
+      >
+        <div ref={setDropRef} className="flex min-h-3 flex-col gap-2">
+          {cards.map((card) => (
+            <SortableCard
+              key={card.id}
+              card={card}
+              onClick={() => onCardClick(card)}
+            />
+          ))}
+        </div>
+      </SortableContext>
 
       <form onSubmit={addCard} className="mt-2 flex flex-col gap-2">
         <input
