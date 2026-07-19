@@ -11,10 +11,16 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { arrayMove, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
+import {
+  arrayMove,
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
 
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -26,12 +32,15 @@ import {
   deleteColumn,
   getBoard,
   moveCard,
+  moveColumn,
   renameBoard,
   renameColumn,
   updateCard,
   type BoardDetail,
   type Card,
+  type Column,
   type MoveCardBody,
+  type MoveColumnBody,
 } from "@/lib/boards";
 import { Protected } from "@/components/protected";
 import { BoardColumnView } from "@/components/board/board-column-view";
@@ -49,12 +58,18 @@ function columnIdOfCard(board: BoardDetail, cardId: string): string | null {
   return null;
 }
 
+/** True if a drop target id refers to a column's card area (vs an individual card). */
+const CARDS_PREFIX = "cards:";
+function isColumnCardsArea(targetId: string): boolean {
+  return targetId.startsWith(CARDS_PREFIX);
+}
+
 /**
- * The column a droppable target belongs to. A drop target is either a card (return its column)
- * or a column's own drop area (id === column id, for dropping into an empty column).
+ * The column a card-drop target belongs to. During a card drag the target is either another card
+ * (return its column) or a column's card area (`cards:<id>`, for dropping into an empty column).
  */
 function columnIdOfTarget(board: BoardDetail, targetId: string): string | null {
-  if (board.columns.some((c) => c.column.id === targetId)) return targetId;
+  if (isColumnCardsArea(targetId)) return targetId.slice(CARDS_PREFIX.length);
   return columnIdOfCard(board, targetId);
 }
 
@@ -80,6 +95,16 @@ function replaceCard(board: BoardDetail, updated: Card): BoardDetail {
       ...c,
       cards: c.cards.map((card) => (card.id === updated.id ? updated : card)),
     })),
+  };
+}
+
+/** Replace a column's metadata (matched by id), keeping its cards — used to reconcile a move. */
+function replaceColumn(board: BoardDetail, updated: Column): BoardDetail {
+  return {
+    ...board,
+    columns: board.columns.map((c) =>
+      c.column.id === updated.id ? { ...c, column: updated } : c,
+    ),
   };
 }
 
@@ -188,34 +213,64 @@ function BoardContent() {
     setOpenCard(null);
   }
 
-  // --- card drag-and-drop ---
+  // --- drag-and-drop (cards and columns) ---
 
-  // The card being dragged (drawn in the DragOverlay), and a snapshot to roll back to if the
-  // server rejects the move. Because every board update is immutable, the snapshot's arrays stay
-  // intact even as we optimistically replace them.
+  // Whichever item is being dragged (drawn in the DragOverlay), and a snapshot to roll back to if
+  // the server rejects the move. Because every board update is immutable, the snapshot's arrays
+  // stay intact even as we optimistically replace them.
   const [activeCard, setActiveCard] = useState<Card | null>(null);
+  const [activeColumn, setActiveColumn] = useState<Column | null>(null);
   const snapshotRef = useRef<BoardDetail | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
 
-  // A click and a drag start the same way; the distance constraint means a plain click (no
-  // movement) still falls through to the card's onClick (open modal), and only real dragging
-  // begins a drag. KeyboardSensor makes the whole thing operable without a mouse.
+  // For cards, a click and a drag start the same way; the distance constraint means a plain click
+  // (no movement) still falls through to the card's onClick (open modal), and only real dragging
+  // begins a drag. Columns drag only from their grip handle. KeyboardSensor adds a11y.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // One DndContext holds two kinds of draggable (cards and columns), so restrict collision
+  // candidates to targets of the matching kind — otherwise a dragged column would try to "drop
+  // into" a card, and vice versa.
+  const collisionDetection: CollisionDetection = (args) => {
+    const draggingColumn = args.active.data.current?.type === "column";
+    const candidates = args.droppableContainers.filter((c) => {
+      const targetType = c.data.current?.type;
+      return draggingColumn
+        ? targetType === "column"
+        : targetType === "card" || targetType === "column-cards";
+    });
+    return closestCorners({ ...args, droppableContainers: candidates });
+  };
+
   function handleDragStart(event: DragStartEvent) {
     if (board === null) return;
-    const cardId = String(event.active.id);
-    const columnId = columnIdOfCard(board, cardId);
-    const card = columnId ? cardsOf(board, columnId).find((c) => c.id === cardId) : null;
     snapshotRef.current = board;
+    const activeId = String(event.active.id);
+    if (event.active.data.current?.type === "column") {
+      const found = board.columns.find((c) => c.column.id === activeId);
+      setActiveColumn(found?.column ?? null);
+      return;
+    }
+    const columnId = columnIdOfCard(board, activeId);
+    const card = columnId ? cardsOf(board, columnId).find((c) => c.id === activeId) : null;
     setActiveCard(card ?? null);
   }
 
   async function handleDragEnd(event: DragEndEvent) {
     setActiveCard(null);
+    setActiveColumn(null);
+    if (board === null || event.over === null) return;
+    if (event.active.data.current?.type === "column") {
+      await moveColumnEnd(event);
+    } else {
+      await moveCardEnd(event);
+    }
+  }
+
+  async function moveCardEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (board === null || over === null) return;
 
@@ -229,11 +284,12 @@ function BoardContent() {
     const moved = fromCards[fromIndex];
 
     // Where in the destination column did we drop? Over a card → at that card's index;
-    // over the column's own area (empty space / empty column) → append.
+    // over the column's own card area (empty space / empty column) → append.
     const overId = String(over.id);
     const destCards = cardsOf(board, toColumnId);
-    const overIndex =
-      overId === toColumnId ? destCards.length : destCards.findIndex((c) => c.id === overId);
+    const overIndex = isColumnCardsArea(overId)
+      ? destCards.length
+      : destCards.findIndex((c) => c.id === overId);
 
     // Build the optimistic next board and find the moved card's final neighbours.
     let next: BoardDetail;
@@ -275,9 +331,40 @@ function BoardContent() {
       // Reconcile: order already matches; adopt the server's canonical rank/columnId/updatedAt.
       setBoard((prev) => (prev === null ? prev : replaceCard(prev, saved)));
     } catch {
-      // Roll back to exactly what was on screen before the drag.
       if (snapshotRef.current) setBoard(snapshotRef.current);
       setMoveError("Couldn't move that card. Put it back — try again.");
+    }
+  }
+
+  async function moveColumnEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (board === null || over === null) return;
+
+    const columnId = String(active.id);
+    const overColumnId = String(over.id);
+    const fromIndex = board.columns.findIndex((c) => c.column.id === columnId);
+    const toIndex = board.columns.findIndex((c) => c.column.id === overColumnId);
+    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
+
+    const columns = arrayMove(board.columns, fromIndex, toIndex);
+    setBoard({ ...board, columns });
+
+    // Intent: anchor to the column now to the left (after), else the one to the right (before).
+    const finalIndex = columns.findIndex((c) => c.column.id === columnId);
+    const left = columns[finalIndex - 1];
+    const right = columns[finalIndex + 1];
+    const body: MoveColumnBody = left
+      ? { afterColumnId: left.column.id }
+      : right
+        ? { beforeColumnId: right.column.id }
+        : {};
+
+    try {
+      const saved = await moveColumn(authFetch, columnId, body);
+      setBoard((prev) => (prev === null ? prev : replaceColumn(prev, saved)));
+    } catch {
+      if (snapshotRef.current) setBoard(snapshotRef.current);
+      setMoveError("Couldn't move that column. Put it back — try again.");
     }
   }
 
@@ -341,27 +428,43 @@ function BoardContent() {
 
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCorners}
+        collisionDetection={collisionDetection}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
-        onDragCancel={() => setActiveCard(null)}
+        onDragCancel={() => {
+          setActiveCard(null);
+          setActiveColumn(null);
+        }}
       >
-        <div className="flex flex-1 items-start gap-4 overflow-x-auto pb-4">
-          {board.columns.map(({ column, cards }) => (
-            <BoardColumnView
-              key={column.id}
-              column={column}
-              cards={cards}
-              onRename={(title) => handleRenameColumn(column.id, title)}
-              onDelete={() => handleDeleteColumn(column.id)}
-              onCreateCard={(title) => handleAddCard(column.id, title)}
-              onCardClick={setOpenCard}
-            />
-          ))}
-          <AddColumn onAdd={handleAddColumn} />
-        </div>
+        <SortableContext
+          items={board.columns.map((c) => c.column.id)}
+          strategy={horizontalListSortingStrategy}
+        >
+          <div className="flex flex-1 items-start gap-4 overflow-x-auto pb-4">
+            {board.columns.map(({ column, cards }) => (
+              <BoardColumnView
+                key={column.id}
+                column={column}
+                cards={cards}
+                onRename={(title) => handleRenameColumn(column.id, title)}
+                onDelete={() => handleDeleteColumn(column.id)}
+                onCreateCard={(title) => handleAddCard(column.id, title)}
+                onCardClick={setOpenCard}
+              />
+            ))}
+            <AddColumn onAdd={handleAddColumn} />
+          </div>
+        </SortableContext>
 
-        <DragOverlay>{activeCard ? <CardFace card={activeCard} /> : null}</DragOverlay>
+        <DragOverlay>
+          {activeCard ? (
+            <CardFace card={activeCard} />
+          ) : activeColumn ? (
+            <div className="w-72 rounded-xl border border-zinc-300 bg-zinc-100 p-3 text-sm font-semibold text-zinc-800 shadow-lg dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100">
+              {activeColumn.title}
+            </div>
+          ) : null}
+        </DragOverlay>
       </DndContext>
 
       {openCard && (

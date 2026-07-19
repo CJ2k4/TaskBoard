@@ -78,6 +78,19 @@ export const renameColumn = (authFetch: AuthFetch, id: string, title: string) =>
 export const deleteColumn = (authFetch: AuthFetch, id: string) =>
   authFetch<void>(`/api/columns/${id}`, { method: "DELETE" });
 
+/**
+ * A column reorder expressed as intent, mirroring the backend's `MoveColumnRequest`.
+ * `afterColumnId` wins if both are set; neither means "append to the end". As with cards, the
+ * server resolves the neighbours against its own order and returns the canonical `rank`.
+ */
+export type MoveColumnBody = {
+  beforeColumnId?: string;
+  afterColumnId?: string;
+};
+
+export const moveColumn = (authFetch: AuthFetch, id: string, body: MoveColumnBody) =>
+  authFetch<Column>(`/api/columns/${id}/move`, { method: "PATCH", ...json(body) });
+
 // --- Cards ----------------------------------------------------------------
 
 export const createCard = (

@@ -2,7 +2,12 @@
 
 import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
-import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 import { ApiError } from "@/lib/api";
 import type { Card, Column } from "@/lib/boards";
@@ -33,11 +38,23 @@ export function BoardColumnView({
   onCreateCard: (title: string) => Promise<void>;
   onCardClick: (card: Card) => void;
 }) {
-  // The card area is a drop target keyed by column id, so a card can be dropped into this
-  // column even when it's empty (there are no cards to sort against).
+  // The column itself is sortable (draggable among the other columns). Only the grip handle in
+  // the header actually starts the drag — see `listeners` below — so the header's rename/delete
+  // and the cards inside stay independently interactive.
+  const {
+    setNodeRef: setColumnRef,
+    attributes,
+    listeners,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: column.id, data: { type: "column" } });
+
+  // A separate drop target for *cards* landing in this column, so an empty column still accepts
+  // a card. Its id is namespaced (`cards:`) to stay distinct from the column's own sortable id.
   const { setNodeRef: setDropRef } = useDroppable({
-    id: column.id,
-    data: { type: "column", columnId: column.id },
+    id: `cards:${column.id}`,
+    data: { type: "column-cards", columnId: column.id },
   });
 
   const [editing, setEditing] = useState(false);
@@ -84,8 +101,25 @@ export function BoardColumnView({
   }
 
   return (
-    <div className="flex w-72 shrink-0 flex-col rounded-xl border border-zinc-200 bg-zinc-100/60 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+    <div
+      ref={setColumnRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.4 : 1,
+      }}
+      className="flex w-72 shrink-0 flex-col rounded-xl border border-zinc-200 bg-zinc-100/60 p-3 dark:border-zinc-800 dark:bg-zinc-900/40"
+    >
       <div className="mb-3 flex items-start justify-between gap-2">
+        <span
+          {...attributes}
+          {...listeners}
+          className="mt-0.5 cursor-grab select-none text-zinc-400 touch-none active:cursor-grabbing dark:text-zinc-500"
+          title="Drag to reorder column"
+          aria-label="Drag to reorder column"
+        >
+          ⠿
+        </span>
         {editing ? (
           <input
             autoFocus

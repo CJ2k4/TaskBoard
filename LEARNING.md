@@ -1647,16 +1647,75 @@ rollback path we saw for real via the stale-backend catch above.
 
 ---
 
+### Step 3.5 — Dragging columns too (`@dnd-kit`, Pass B) · _2026-07-19_
+
+**Goal:** the other half of drag-and-drop — reorder whole *columns* by dragging, same
+optimistic + reconcile model as cards. This completes M3's frontend.
+
+**Files:** `src/components/board/board-column-view.tsx` (edited — column now `useSortable`, grip
+handle, renamed card-drop id), `src/app/boards/[id]/page.tsx` (edited — horizontal
+`SortableContext`, a type-aware collision detector, a column branch in the drag handlers,
+column overlay), `src/lib/boards.ts` (edited — `moveColumn`).
+
+> **Concepts:** drag handle · mixed draggables in one DndContext · custom collision detection ·
+> horizontal sortable · id namespacing to avoid collisions · not regressing an existing feature
+
+**A column isn't a card — it needs a drag *handle*.** A card is a single clickable thing, so the
+whole card is draggable (with an activation distance to still allow clicks). A column is the
+opposite: it's a *container* full of controls — a click-to-rename title, a delete button, an
+add-card input, and the draggable cards themselves. Make the whole column draggable and it
+fights every one of them. The fix is a dedicated **grip handle** (`⠿`) in the header: only the
+grip carries the drag listeners, so everything else in the column stays normally interactive.
+This is why the card and column drag ergonomics differ — the right affordance follows from what
+the thing *is*.
+
+**One DndContext, two kinds of draggable — kept apart by a custom collision detector.** Cards and
+columns now live in the same `DndContext`. Two problems fall out. First, an *id collision*: the
+column was already a droppable keyed by its id (so empty columns accept card drops), and making
+it `useSortable` would reuse that same id for a second purpose. Fix: namespace the card-drop
+target as `cards:<columnId>` and keep the bare id for the column sortable. Second, *cross-talk*:
+without help, a dragged column would try to "drop into" a card, and a dragged card would collide
+with column handles. Fix: a **custom `collisionDetection`** that reads what's being dragged
+(`active.data.current.type`) and only considers targets of the matching kind — columns collide
+with columns, cards with cards and card-areas. Each draggable/droppable tags itself with a
+`type` in its `data`, and the detector filters on it. This is the standard dnd-kit answer for a
+board that drags at two levels.
+
+**The rest mirrors cards.** Columns sit in a **horizontal** `SortableContext`
+(`horizontalListSortingStrategy`); on drop we `arrayMove` the columns optimistically, express the
+move as intent (`afterColumnId` = the column now to the left, else `beforeColumnId` = the one to
+the right, else append), call `moveColumn`, reconcile the returned rank, and roll back to the
+drag-start snapshot on failure — the exact shape Pass A established.
+
+**The discipline that mattered most: don't regress Pass A.** Adding a second draggable type is
+exactly the kind of change that quietly breaks the first. So verification re-tested *card*
+dragging explicitly, not just the new column dragging. In a real browser we: dragged a column by
+its grip to the front, the middle, and the end — each persisted through a reload (confirmed
+against the server's stored ranks); confirmed cards ride along with their column; then went back
+and dragged a *card* within a column (still works), clicked a card (modal still opens), and
+renamed a column (the grip didn't swallow the title click). All green — the collision filter
+cleanly separates the two interactions.
+
+> **A verification habit:** when a screenshot mid-sequence looked "off," we didn't trust the
+> pixels — we queried the server's actual column ranks and re-ran a single clean drag in
+> isolation. Ground truth lives in the database, not a cramped screenshot.
+
+---
+
 ### Where M3 stands
 
 Backend: ✅ move endpoints (intent → canonical rank, cross-column, exhaustion re-space) · 75 tests.
 
-Frontend (Pass A): ✅ drag cards within a column · ✅ drag cards across columns (incl. into an
-empty one) · ✅ optimistic move + reconcile to server rank · ✅ snapshot rollback on failure ·
-✅ click-still-opens-modal (activation distance) · ✅ verified end-to-end in a real browser.
+Frontend: ✅ drag cards within/across columns (incl. empty) · ✅ **drag columns to reorder** ·
+✅ optimistic move + reconcile to server rank · ✅ snapshot rollback · ✅ card click-to-open and
+column rename/delete all intact under a two-level DndContext · ✅ verified end-to-end in a real
+browser (front/middle/end column moves persisted).
 
-Next: **Pass B — dragging columns** (`PATCH /api/columns/{id}/move`, horizontal sortable), then
-**M4** (roles/sharing) before **M5** (real-time).
+**🎉 Milestone 3 complete — front to back.** Every reorder a drag can express — cards within a
+column, cards across columns, and columns among themselves — is a one-request, server-authoritative
+write, reflected instantly and reconciled to the canonical rank.
+
+Next: **M4 — sharing, invites & role enforcement** (owner/editor/viewer), then **M5** (real-time).
 
 ---
 
