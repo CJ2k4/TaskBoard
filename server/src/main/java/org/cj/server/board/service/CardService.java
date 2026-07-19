@@ -1,16 +1,19 @@
 package org.cj.server.board.service;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.cj.server.board.dto.MoveCardRequest;
 import org.cj.server.board.entity.BoardColumn;
 import org.cj.server.board.entity.Card;
 import org.cj.server.board.repository.BoardColumnRepository;
 import org.cj.server.board.repository.CardRepository;
 import org.cj.server.common.exception.NotFoundException;
 import org.cj.server.common.ranking.LexoRank;
+import org.cj.server.common.ranking.RankExhaustedException;
 
 /**
  * Card business logic. Like columns, every operation is authorized through
@@ -59,6 +62,91 @@ public class CardService {
     public void delete(UUID cardId, UUID userId) {
         Card card = requireCardOnOwnedBoard(cardId, userId);
         cards.delete(card);
+    }
+
+    /**
+     * Move a card — the M3 drag-and-drop write. The request names a target column and (at
+     * most) a neighbour; the <b>server</b> resolves that intent against its own current order
+     * and computes the canonical rank (see {@link MoveCardRequest} for the semantics).
+     *
+     * <p>If the gap the card must land in has been subdivided to exhaustion,
+     * {@link LexoRank#between} throws and we <b>re-balance</b>: every sibling in the target
+     * column gets a fresh short key from {@link LexoRank#spread} (order unchanged), then the
+     * placement is retried once against the roomy new gaps.
+     */
+    @Transactional
+    public Card move(UUID cardId, UUID userId, MoveCardRequest req) {
+        Card card = requireCardOnOwnedBoard(cardId, userId);
+
+        BoardColumn target = columns.findById(req.targetColumnId())
+                .orElseThrow(() -> new NotFoundException("Column not found"));
+        // Cross-board moves are not a thing: the denormalized card.boardId stays correct
+        // precisely because we refuse any target outside the card's own board.
+        if (!target.getBoardId().equals(card.getBoardId())) {
+            throw new IllegalArgumentException("Target column belongs to a different board");
+        }
+
+        // The card's future siblings, in current rank order, minus the card itself (it may
+        // already live in the target column when reordering in place).
+        List<Card> siblings = cards.findByColumnIdOrderByRankAsc(target.getId()).stream()
+                .filter(c -> !c.getId().equals(card.getId()))
+                .toList();
+
+        Placement placement = resolvePlacement(siblings, req.afterCardId(), req.beforeCardId());
+        String rank;
+        try {
+            rank = LexoRank.between(placement.prev(), placement.next());
+        } catch (RankExhaustedException ex) {
+            rebalance(siblings);
+            // Ranks changed under the placement — resolve again, then retry once.
+            placement = resolvePlacement(siblings, req.afterCardId(), req.beforeCardId());
+            rank = LexoRank.between(placement.prev(), placement.next());
+        }
+
+        card.moveTo(target.getId(), rank);
+        return cards.save(card);
+    }
+
+    /** The rank bounds a move must land between; either side may be null (open end). */
+    private record Placement(String prev, String next) {}
+
+    /**
+     * Turn "(after X | before X | at the end)" into concrete prev/next rank bounds using the
+     * server's sibling order. A named neighbour that isn't actually in the target column is a
+     * client error (400) — likely a stale or malformed request.
+     */
+    private Placement resolvePlacement(List<Card> siblings, UUID afterId, UUID beforeId) {
+        if (afterId != null) {
+            int i = indexOf(siblings, afterId, "afterCardId");
+            String next = i + 1 < siblings.size() ? siblings.get(i + 1).getRank() : null;
+            return new Placement(siblings.get(i).getRank(), next);
+        }
+        if (beforeId != null) {
+            int i = indexOf(siblings, beforeId, "beforeCardId");
+            String prev = i > 0 ? siblings.get(i - 1).getRank() : null;
+            return new Placement(prev, siblings.get(i).getRank());
+        }
+        // No anchor: append to the end.
+        String last = siblings.isEmpty() ? null : siblings.get(siblings.size() - 1).getRank();
+        return new Placement(last, null);
+    }
+
+    private int indexOf(List<Card> siblings, UUID id, String field) {
+        for (int i = 0; i < siblings.size(); i++) {
+            if (siblings.get(i).getId().equals(id)) {
+                return i;
+            }
+        }
+        throw new IllegalArgumentException(field + " is not a card in the target column");
+    }
+
+    /** Re-space the whole column: fresh short evenly-spread ranks, same order. */
+    private void rebalance(List<Card> siblings) {
+        List<String> fresh = LexoRank.spread(siblings.size());
+        for (int i = 0; i < siblings.size(); i++) {
+            siblings.get(i).rebalanceRank(fresh.get(i));
+        }
+        cards.saveAll(siblings);
     }
 
     /** Load a card and assert the caller owns its board, else 404. */

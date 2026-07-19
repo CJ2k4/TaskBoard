@@ -1395,6 +1395,197 @@ and across columns and reordering columns, reconciling to the server's canonical
 
 ---
 
+## Milestone 3 — Drag-and-drop moves
+
+**Goal of the whole milestone:** reorder cards (within and across columns) and reorder
+columns, with the order persisting. This phase builds the **backend half**: `move` endpoints
+that accept *intent* ("put this card after that one") and reply with the server-computed
+canonical rank. The `@dnd-kit` browser drag UI is the phase after.
+
+Why intent instead of "here's my new rank"? Because the server must stay the **single
+authority on ordering** (the M5 real-time story depends on it: two people dragging at once
+both get valid, converging results). A client that computed its own rank could be stale,
+malicious, or just wrong; a client that says "after card X" can be safely interpreted against
+the server's current truth.
+
+### Step 3.1 — `LexoRank.spread`: the re-balance primitive · _2026-07-19_
+
+**Goal:** be able to hand a container (a column's cards, a board's columns) a fresh set of
+short, evenly spaced rank keys — the escape hatch for when repeated inserts in one spot have
+ground the rank space down to nothing.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/common/ranking/LexoRank.java` (new `spread(count)`)
+- `server/src/test/java/org/cj/server/common/ranking/LexoRankTest.java` (4 new tests → 15)
+
+> **Concepts:** rank exhaustion · re-balancing / re-spacing · fixed-width base-36 rendering ·
+> even distribution & maximal gaps · designing the primitive before the routine that uses it
+
+**The problem, concretely.** Back in Step 2.1, `between` got a length cap: keys grow a digit
+each time you subdivide the same gap, and past `MAX_LENGTH` (48) it throws
+`RankExhaustedException` rather than growing forever. M2 never hits that; M3's endless
+dragging eventually can. The fix is a **re-balance**: forget the old cramped keys, deal every
+item in the container a brand-new short key, evenly spaced, in the same order — then the
+failed insert retries against roomy gaps.
+
+**What `spread(count)` does.** It returns `count` strictly increasing keys distributed evenly
+across the whole rank space:
+
+1. Pick the smallest fixed width `w` with `36^w ≥ count + 2` — the `+2` guarantees a usable
+   gap *before the first* and *after the last* key, not just between them.
+2. Step through the numeric space in increments of `36^w / (count + 1)`, rendering each value
+   as exactly `w` base-36 digits (leading zeros kept — fixed width is what makes string
+   comparison keep matching numeric comparison).
+
+So 10 items get 2-char keys, 1000 items get 2-char keys, and every neighbouring pair is left
+with the *maximum possible* room for future inserts. A pleasing consistency: `spread(1)`
+yields `["i"]` — the exact key `between(null, null)` gives a first item.
+
+**Why build the primitive first, separately.** The re-balance *routine* (catch the exception,
+reassign, retry) lives in the move services (Steps 3.2/3.3) and touches entities,
+repositories, and transactions. The *math* of generating good keys is pure and testable in
+isolation — same reasoning as Step 2.1: get the sharp edge airtight before wiring it in.
+
+**How we verified.** Four new tests: strictly-increasing + unique for counts 1/2/35/36/100/1000
+(the 35→36 boundary crosses the width-1→2 threshold); keys stay short (≤ 2–3 chars); an
+interleaving test proving `between` works before the first, between every pair, and after the
+last spread key (the exact operations a post-re-balance drag performs); and non-positive
+counts are rejected.
+
+```bash
+cd server
+./mvnw test -Dtest=LexoRankTest   # 15 passing (11 old + 4 new)
+```
+
+All green. Now the endpoint that puts it to work.
+
+### Step 3.2 — Moving cards: `PATCH /api/cards/{id}/move` · _2026-07-19_
+
+**Goal:** the write behind every card drag — reorder within a column, move across columns,
+land in an empty column — expressed as intent and answered with the canonical rank.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/board/dto/MoveCardRequest.java`
+- `server/src/main/java/org/cj/server/board/entity/Card.java` (`moveTo`, `rebalanceRank`)
+- `server/src/main/java/org/cj/server/board/service/CardService.java` (`move` + placement + re-balance)
+- `server/src/main/java/org/cj/server/board/controller/CardController.java` (the route)
+- `server/src/test/java/org/cj/server/board/CardMoveIntegrationTest.java` (9 tests)
+
+> **Concepts:** intent-based API design · resolving intent against server truth · anchor
+> (before/after) semantics · catch-repair-retry (re-balance) · why re-balance must not bump
+> `updatedAt` · sabotage-style testing
+
+**The request is a sentence, not a number.** `MoveCardRequest` carries `targetColumnId` plus
+at most one anchor: `afterCardId` ("put it right after this card"), or `beforeCardId`, or
+neither ("append"). No rank anywhere. The service turns that sentence into rank bounds by
+loading the target column's cards **in its own current order** (minus the moving card — it
+may already be in that column), finding the anchor, and taking the neighbour on the far side
+from the *server's* list, not the client's. Then `LexoRank.between(prev, next)` produces the
+rank, and the response returns the card with its resolved `rank` and `columnId` — what the
+client reconciles to.
+
+Why this matters: a client that drags against a *stale* view still names a real card, and the
+server places the moved card relative to where that anchor **actually is now**. Wrong-by-a-
+little beats corrupt. This is the property that makes M5's concurrent dragging convergent.
+
+**The re-balance routine — catch, repair, retry.** If the anchor's gap has been subdivided to
+death, `between` throws `RankExhaustedException` (Step 2.1's tripwire). The service then:
+(1) deals the column's cards fresh keys from `spread` (Step 3.1) in unchanged order,
+(2) re-resolves the placement — the old bounds are dead — and (3) retries `between` once,
+which now succeeds against roomy gaps. One subtlety: re-balanced siblings get their rank via
+`rebalanceRank`, which deliberately does **not** bump `updatedAt` — re-spacing is server
+bookkeeping, and an untouched card must never look "recently edited" to M5's last-write-wins
+conflict rule. The *moved* card, by contrast, goes through `moveTo`, which does bump it — a
+move is a real user action.
+
+**Guardrails.** The target column must belong to the card's own board (cross-board moves are
+refused with 400) — which is exactly what keeps the denormalized `card.board_id` forever
+correct. An anchor that isn't in the target column is 400. Unknown card/column → 404;
+non-owner → 404 via the same `requireOwnedBoard` guard as everything else.
+
+**How we verified.** Nine full-stack tests, all asserting through `GET /api/boards/{id}` —
+the order a client actually sees: after/before/append within a column; prepend before the
+first card; cross-column move (columnId changes, boardId doesn't, both columns' orders
+right); move into an empty column; wrong-column anchor → 400; cross-board target → 400;
+unknown ids → 404 and missing target → 400; non-owner → 404. And the fun one — a **sabotage
+test** for the re-balance: create two cards, then reach *under* the API via the repository
+and hand them adversarially adjacent ranks (`"a"` and `"a0…01"` at the length cap), so the
+very first `between` must throw. Drive the real endpoint to move a third card into that gap:
+the move lands exactly where intended **and** every rank in the column comes back short.
+
+```bash
+cd server
+./mvnw test -Dtest=CardMoveIntegrationTest   # 9 passing
+```
+
+All green. Columns move the same way, one level up.
+
+### Step 3.3 — Moving columns: `PATCH /api/columns/{id}/move` · _2026-07-19_
+
+**Goal:** reorder the columns themselves — the other half of drag-and-drop.
+
+**Files:**
+
+- `server/src/main/java/org/cj/server/board/dto/MoveColumnRequest.java`
+- `server/src/main/java/org/cj/server/board/entity/BoardColumn.java` (`moveTo`, `rebalanceRank`)
+- `server/src/main/java/org/cj/server/board/service/ColumnService.java` (`move`)
+- `server/src/main/java/org/cj/server/board/controller/ColumnController.java` (the route)
+- `server/src/test/java/org/cj/server/board/ColumnMoveIntegrationTest.java` (4 tests)
+
+> **Concepts:** the same pattern one level up · deliberate duplication vs premature
+> abstraction · smoke-testing on an alternate port
+
+**Deliberately the same shape as 3.2.** `MoveColumnRequest` names an optional neighbour
+(`afterColumnId` / `beforeColumnId`, neither = append); the service loads the board's columns
+in current order minus the moving one, resolves the anchor into prev/next bounds, computes the
+rank with `between`, and on `RankExhaustedException` re-spaces via `spread` and retries once.
+The only differences: siblings come from the *board* rather than a column, and there's no
+cross-container concern at all — columns can never change boards, so the request has no
+target-board field.
+
+**On the duplication.** `CardService.move` and `ColumnService.move` share their skeleton
+(`Placement`, `resolvePlacement`, `rebalance`) with different entity types. We *could* extract
+a generic helper — and chose not to: two small, readable copies beat one abstraction invented
+for exactly two users ("rule of three": wait until a third case shows what the abstraction
+really is). If M6+ adds another ranked container, that's the moment to unify.
+
+**How we verified.** Four tests: after/before/append reorder the board (asserted through the
+aggregate); prepend before the first; an anchor column from a *different* board → 400; unknown
+column / non-owner → 404. Then the full suite — **75 tests** — and a live curl smoke of the
+whole M3 flow. One operational note: port 8080 was already occupied (a dev server), and
+instead of killing it we ran the smoke jar with `--server.port=8081` — Spring Boot properties
+are overridable from the command line, and testing on an alternate port beats killing a
+process you didn't start.
+
+The smoke transcript, condensed — every move answered with the resolved rank, and a fresh GET
+("reload") showed it all persisted:
+
+```text
+start:      To do: A B C | Done:
+C after A → To do: A C B          (resolved rank "m" — between A's "i" and B's "r")
+B → Done  → To do: A C | Done: B  (columnId changed, boardId didn't)
+Done before To do → Done: B | To do: A C   (rank "9" < "i")
+reload    → Done: B | To do: A C  ✓ persisted
+anchor from wrong column → HTTP 400 ✓
+```
+
+---
+
+### Where M3 stands
+
+Backend: ✅ `LexoRank.spread` re-balance primitive · ✅ `PATCH /api/cards/{id}/move` (intent →
+canonical rank; cross-column with `board_id` intact; exhaustion → re-space → retry) ·
+✅ `PATCH /api/columns/{id}/move` · ✅ **75 tests** + live curl smoke.
+
+**🎉 Milestone 3 backend complete.** Every reorder a drag can express is now a one-request,
+server-authoritative write. Deferred to the next phase: the **`@dnd-kit` frontend** — drag
+cards/columns in the browser, optimistic local move, reconcile to the server's returned rank.
+(Real-time broadcast of moves is M5; roles beyond owner are M4.)
+
+---
+
 ## Quick command reference
 
 ```bash

@@ -74,6 +74,26 @@ public class Card {
         this.updatedAt = Instant.now();
     }
 
+    /**
+     * Move this card to a column (possibly its current one) at a server-computed rank. A move
+     * is a user action, so {@code updatedAt} is bumped. The caller must have verified the
+     * target column belongs to this card's board — {@code boardId} does not change.
+     */
+    public void moveTo(UUID columnId, String rank) {
+        this.columnId = columnId;
+        this.rank = rank;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
+     * Reassign the rank during a re-balance. Deliberately does <b>not</b> bump
+     * {@code updatedAt}: re-spacing is server bookkeeping, not a user edit, and must never
+     * win a future last-write-wins conflict (M5) on behalf of an untouched card.
+     */
+    public void rebalanceRank(String rank) {
+        this.rank = rank;
+    }
+
     public UUID getId() {
         return id;
     }

@@ -63,6 +63,20 @@ public class BoardColumn {
         this.updatedAt = Instant.now();
     }
 
+    /** Reorder this column to a server-computed rank. A user action, so {@code updatedAt} bumps. */
+    public void moveTo(String rank) {
+        this.rank = rank;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
+     * Reassign the rank during a re-balance. Does <b>not</b> bump {@code updatedAt} — server
+     * bookkeeping must never win a future last-write-wins race for an untouched column.
+     */
+    public void rebalanceRank(String rank) {
+        this.rank = rank;
+    }
+
     public UUID getId() {
         return id;
     }

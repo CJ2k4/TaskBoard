@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.cj.server.auth.security.AuthPrincipal;
 import org.cj.server.board.dto.CardResponse;
 import org.cj.server.board.dto.CreateCardRequest;
+import org.cj.server.board.dto.MoveCardRequest;
 import org.cj.server.board.dto.UpdateCardRequest;
 import org.cj.server.board.service.CardService;
 
@@ -48,6 +49,18 @@ public class CardController {
                                @Valid @RequestBody UpdateCardRequest req,
                                @AuthenticationPrincipal AuthPrincipal me) {
         return CardResponse.from(cardService.update(id, me.userId(), req.title(), req.description()));
+    }
+
+    /**
+     * Move a card (M3). The body is intent — target column + optional neighbour — and the
+     * response carries the server-resolved {@code rank}/{@code columnId} for the client to
+     * reconcile to.
+     */
+    @PatchMapping("/api/cards/{id}/move")
+    public CardResponse move(@PathVariable UUID id,
+                             @Valid @RequestBody MoveCardRequest req,
+                             @AuthenticationPrincipal AuthPrincipal me) {
+        return CardResponse.from(cardService.move(id, me.userId(), req));
     }
 
     @DeleteMapping("/api/cards/{id}")

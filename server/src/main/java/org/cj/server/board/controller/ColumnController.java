@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.cj.server.auth.security.AuthPrincipal;
 import org.cj.server.board.dto.ColumnResponse;
 import org.cj.server.board.dto.CreateColumnRequest;
+import org.cj.server.board.dto.MoveColumnRequest;
 import org.cj.server.board.dto.UpdateColumnRequest;
 import org.cj.server.board.service.ColumnService;
 
@@ -48,6 +49,17 @@ public class ColumnController {
                                  @Valid @RequestBody UpdateColumnRequest req,
                                  @AuthenticationPrincipal AuthPrincipal me) {
         return ColumnResponse.from(columnService.rename(id, me.userId(), req.title()));
+    }
+
+    /**
+     * Reorder a column (M3). The body is intent — an optional neighbour column — and the
+     * response carries the server-resolved {@code rank} for the client to reconcile to.
+     */
+    @PatchMapping("/api/columns/{id}/move")
+    public ColumnResponse move(@PathVariable UUID id,
+                               @Valid @RequestBody MoveColumnRequest req,
+                               @AuthenticationPrincipal AuthPrincipal me) {
+        return ColumnResponse.from(columnService.move(id, me.userId(), req));
     }
 
     @DeleteMapping("/api/columns/{id}")

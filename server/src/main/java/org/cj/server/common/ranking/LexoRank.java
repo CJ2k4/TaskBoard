@@ -1,5 +1,8 @@
 package org.cj.server.common.ranking;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * LexoRank-style fractional ordering keys. A "rank" is a short string; items are ordered by
  * plain lexicographic comparison of their ranks. To insert an item <em>between</em> two
@@ -19,10 +22,11 @@ package org.cj.server.common.ranking;
  * <p>{@code null} bounds mean "open end": {@code between(null, null)} is the very first rank,
  * {@code between(last, null)} appends, {@code between(null, first)} prepends.
  *
- * <p><b>Not handled here:</b> rank <em>exhaustion</em> (keys growing without bound after many
- * inserts in the same spot). If a computed key would exceed {@link #MAX_LENGTH} we throw
- * {@link RankExhaustedException}, which is M3's signal to re-balance the column. For M2's
- * modest insert volumes this never trips.
+ * <p><b>Rank exhaustion:</b> keys grow one digit at a time when repeatedly inserting in the
+ * same spot. If a computed key would exceed {@link #MAX_LENGTH} we throw
+ * {@link RankExhaustedException} — the signal for the caller (the move services, M3) to
+ * <em>re-balance</em>: assign the container's items fresh evenly-spaced keys from
+ * {@link #spread} and retry the insert once.
  */
 public final class LexoRank {
 
@@ -82,6 +86,47 @@ public final class LexoRank {
             sb.append(digit(mid));
             return sb.toString();
         }
+    }
+
+    /**
+     * {@code count} fresh keys, strictly increasing, evenly distributed across the whole rank
+     * space, and as short as possible — the re-balance primitive. When a container's keys have
+     * grown long enough that {@link #between} gives up ({@link RankExhaustedException}), the
+     * caller reassigns its items these keys in their current order and retries.
+     *
+     * <p>How: choose the smallest fixed width {@code w} such that base-36 offers at least
+     * {@code count + 2} values ({@code 36^w >= count + 2} — the +2 keeps a usable gap open
+     * before the first and after the last key). Then step through the numeric space in
+     * {@code 36^w / (count + 1)} increments, rendering each as a fixed-width base-36 string.
+     * Even spacing means every neighbouring pair leaves maximal room for future inserts.
+     */
+    public static List<String> spread(int count) {
+        if (count <= 0) {
+            throw new IllegalArgumentException("count must be positive, got " + count);
+        }
+        int width = 1;
+        long space = BASE;
+        while (space < (long) count + 2) {
+            width++;
+            space *= BASE;
+        }
+        long step = space / (count + 1);
+
+        List<String> keys = new ArrayList<>(count);
+        for (int i = 1; i <= count; i++) {
+            keys.add(toFixedWidthBase36(i * step, width));
+        }
+        return keys;
+    }
+
+    /** Renders {@code value} as exactly {@code width} base-36 digits (leading zeros kept). */
+    private static String toFixedWidthBase36(long value, int width) {
+        char[] out = new char[width];
+        for (int pos = width - 1; pos >= 0; pos--) {
+            out[pos] = digit((int) (value % BASE));
+            value /= BASE;
+        }
+        return new String(out);
     }
 
     /** Digit value of {@code s} at index {@code i}, or 0 (the minimum) past its end / when null. */

@@ -122,6 +122,45 @@ class LexoRankTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    // --- spread (the re-balance primitive) ---------------------------------
+
+    @Test
+    void spreadProducesStrictlyIncreasingUniqueKeys() {
+        for (int count : new int[] {1, 2, 35, 36, 100, 1000}) {
+            List<String> keys = LexoRank.spread(count);
+            assertThat(keys).hasSize(count).doesNotHaveDuplicates();
+            for (int i = 1; i < keys.size(); i++) {
+                assertThat(keys.get(i)).isGreaterThan(keys.get(i - 1));
+            }
+        }
+    }
+
+    @Test
+    void spreadKeysStayShort() {
+        // The whole point of a re-balance: long, subdivided keys become short again.
+        assertThat(LexoRank.spread(1000)).allSatisfy(k -> assertThat(k.length()).isLessThanOrEqualTo(3));
+        assertThat(LexoRank.spread(10)).allSatisfy(k -> assertThat(k.length()).isLessThanOrEqualTo(2));
+    }
+
+    @Test
+    void spreadKeysLeaveRoomForFutureInserts() {
+        List<String> keys = LexoRank.spread(50);
+        // Before the first, between every neighbouring pair, and after the last.
+        assertThat(LexoRank.between(null, keys.get(0))).isLessThan(keys.get(0));
+        for (int i = 1; i < keys.size(); i++) {
+            String mid = LexoRank.between(keys.get(i - 1), keys.get(i));
+            assertThat(mid).isGreaterThan(keys.get(i - 1)).isLessThan(keys.get(i));
+        }
+        assertThat(LexoRank.between(keys.get(keys.size() - 1), null))
+                .isGreaterThan(keys.get(keys.size() - 1));
+    }
+
+    @Test
+    void spreadRejectsNonPositiveCount() {
+        assertThatThrownBy(() -> LexoRank.spread(0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LexoRank.spread(-3)).isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     void throwsRankExhaustedWhenKeysGrowTooLong() {
         // Adversarial: keep inserting just below a shrinking upper bound against a fixed lower
