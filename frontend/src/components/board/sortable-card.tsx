@@ -22,16 +22,25 @@ export function CardFace({ card }: { card: Card }) {
  * The card's sortable `data` carries its `columnId` so the board's drag handlers can tell which
  * column an item currently belongs to (needed for moves across columns). While this card is the
  * one being dragged we fade it in place; the floating copy is drawn by the board's DragOverlay.
+ *
+ * For a viewer (`canEdit` false) the sortable is `disabled` — dnd-kit's own switch, which keeps
+ * the component tree identical across roles — but the card stays clickable: opening a card to
+ * *read* its description is exactly what a viewer is allowed to do.
  */
 export function SortableCard({
   card,
   onClick,
+  canEdit,
 }: {
   card: Card;
   onClick: () => void;
+  canEdit: boolean;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: card.id, data: { type: "card", columnId: card.columnId } });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: card.id,
+    data: { type: "card", columnId: card.columnId },
+    disabled: !canEdit,
+  });
 
   return (
     <button
@@ -43,7 +52,9 @@ export function SortableCard({
         transition,
         opacity: isDragging ? 0.4 : 1,
       }}
-      className={`${CARD_CLASS} cursor-grab touch-none transition hover:border-zinc-300 active:cursor-grabbing dark:hover:border-zinc-700`}
+      className={`${CARD_CLASS} touch-none transition hover:border-zinc-300 dark:hover:border-zinc-700 ${
+        canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+      }`}
       {...attributes}
       {...listeners}
     >

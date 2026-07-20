@@ -14,14 +14,19 @@ import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
  *
  * Closes on backdrop click or Escape. It never uses `alert/confirm/prompt`; the delete uses the
  * same inline two-step control as the rest of the board.
+ *
+ * A viewer (`canEdit` false) still opens cards — reading a description is the whole point of
+ * having read access — but the fields are `readOnly` and Save/Delete are gone, leaving Close.
  */
 export function CardModal({
   card,
+  canEdit,
   onClose,
   onSave,
   onDelete,
 }: {
   card: Card;
+  canEdit: boolean;
   onClose: () => void;
   onSave: (title: string, description: string | null) => Promise<void>;
   onDelete: () => Promise<void>;
@@ -71,8 +76,9 @@ export function CardModal({
           <input
             type="text"
             value={title}
+            readOnly={!canEdit}
             onChange={(e) => setTitle(e.target.value)}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-900 outline-none focus:border-zinc-500 read-only:text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:read-only:text-zinc-400"
           />
         </label>
 
@@ -82,10 +88,11 @@ export function CardModal({
           </span>
           <textarea
             value={description}
+            readOnly={!canEdit}
             onChange={(e) => setDescription(e.target.value)}
             rows={5}
-            placeholder="Add more detail…"
-            className="resize-y rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            placeholder={canEdit ? "Add more detail…" : "No description"}
+            className="resize-y rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 read-only:text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:read-only:text-zinc-400"
           />
         </label>
 
@@ -96,7 +103,13 @@ export function CardModal({
         )}
 
         <div className="mt-6 flex items-center justify-between">
-          <InlineConfirmButton onConfirm={onDelete} label="Delete card" />
+          {canEdit ? (
+            <InlineConfirmButton onConfirm={onDelete} label="Delete card" />
+          ) : (
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">
+              You have view-only access to this board.
+            </span>
+          )}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -104,16 +117,18 @@ export function CardModal({
               disabled={saving}
               className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
             >
-              Cancel
+              {canEdit ? "Cancel" : "Close"}
             </button>
-            <button
-              type="button"
-              onClick={save}
-              disabled={saving}
-              className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={save}
+                disabled={saving}
+                className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            )}
           </div>
         </div>
       </div>

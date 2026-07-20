@@ -1964,6 +1964,97 @@ them may do.
 Next: **M4 frontend**, then **M5** (real-time), whose WebSocket subscription check will reuse
 `requireBoardAccess` as-is.
 
+### Step 4.4 — The sharing UI and read-only viewers · _2026-07-20_
+
+**Goal:** make the backend's roles visible and usable — invite people from the app, see who has
+access, and render a board a viewer *can't* edit as a board that doesn't *offer* editing.
+
+**Files:**
+
+- `lib/boards.ts` (`Role` type; `myRole` on `Board`, inherited by `BoardDetail`)
+- `lib/members.ts` (new — the membership API client)
+- `components/board/share-modal.tsx` (new — invite form, roster, `RoleBadge`)
+- `components/board/{board-column-view,sortable-card,card-modal}.tsx` (`canEdit`)
+- `app/boards/[id]/page.tsx`, `app/dashboard/page.tsx`
+
+> **Concepts:** permissions as derived UI state · hiding vs disabling vs render-then-reject ·
+> `useSortable({ disabled })` · defence in depth on the client · expected errors as UI copy
+
+**Derive once, pass booleans down.** The board page computes two values from the role the
+server sent:
+
+```tsx
+const canEdit = board !== null && board.myRole !== "VIEWER";
+const isOwner = board !== null && board.myRole === "OWNER";
+```
+
+and hands `canEdit` to the columns, cards, and card modal. The components never see the role
+string. That's deliberate: if every component re-derived policy from `myRole`, the rule "what
+may an editor do?" would live in eight places and drift in seven of them. Note the explicit
+null guard — `board?.myRole !== "VIEWER"` would be `true` while the board is still loading,
+which is the wrong default for a permission.
+
+**Hide, don't disable, and never render-then-reject.** Three options for a control a viewer
+can't use: render it and let the 403 come back, render it greyed out, or don't render it. We
+chose the third. A 403 after clicking teaches the user nothing until they've already failed;
+a disabled button advertises a capability they don't have. So viewers get no add-card box, no
+add-column form, no delete buttons, no grip handles, and a plain `<h1>` where the owner has a
+click-to-rename title. **This is why the server sends `myRole` with the board payload** — the
+UI has to know before it renders, and a separate round trip to ask "what am I?" would be a
+second source of truth.
+
+**Dragging is switched off with dnd-kit's own flag.** `useSortable({ disabled: !canEdit })`
+rather than conditionally removing the `DndContext` or the sortable hooks. Hooks can't be
+called conditionally anyway, and keeping the tree identical across roles means no remount when
+a role changes. The drag handlers *also* start with `if (!canEdit) return`. Redundant today —
+belt and braces — because a sensor added later shouldn't be able to fire a move behind our
+back. Client-side checks are UX, never security: the server refuses regardless.
+
+**Expected errors are copy, not crashes.** Inviting someone twice is a 409, and a malformed
+address is a 400 with `fieldErrors`. Both are *normal things a user does*, so the invite form
+prints the server's own message inline ("Already a member of this board") — more precise than
+anything we'd invent. Pending invites get the same care: a PENDING row shows a badge and
+"Hasn't signed up yet", and the success note says the invitee will get access when they sign
+up. Without that, an owner invites an unregistered friend, sees nothing happen, and invites
+again.
+
+**The one control we refuse to draw.** The owner's own row has no role dropdown and no remove
+button, because the server forbids re-roling or removing it. Offering a control that can only
+fail is a lie the UI tells about itself.
+
+**How we verified** (two accounts, real browser): owner invites a registered user → ACTIVE
+immediately with their name; invites an unknown address → PENDING; invites the same person
+twice → inline 409. As the viewer: the board appears on their dashboard with a Viewer badge and
+no rename/delete, the board page has no edit affordances at all, a card opens read-only, and a
+drag does nothing. Promoted to EDITOR: the grips, composers and delete buttons come back, a
+card actually moves and *persists through a reload*, a new card saves — but the board title
+stays unclickable and "Delete board" never appears. Removed entirely: "Board not found" and an
+empty dashboard, on the very next request.
+
+```bash
+cd frontend
+npm run build   # clean
+```
+
+---
+
+### Where M4 stands
+
+Backend: ✅ invites · ✅ member management · ✅ invites resolve at sign-in · ✅ role enforcement ·
+96 tests.
+
+Frontend: ✅ share modal (invite by email + role, roster, pending badges, re-role, remove) ·
+✅ shared boards on the dashboard with role badges · ✅ viewers fully read-only (no controls,
+no drag, read-only card modal) · ✅ editors edit content but can't administer the board ·
+✅ verified end-to-end across owner / editor / viewer / removed-member.
+
+**🎉 Milestone 4 complete — front to back.** TaskBoard is now genuinely collaborative: a board
+has people on it, each with a role the server enforces and the UI honours.
+
+Next: **M5 — real-time (WebSocket + STOMP)**. Roles came first on purpose — enforcing
+permissions after opening the event firehose is far harder. The subscription check will reuse
+`requireBoardAccess` unchanged.
+
 ---
 
 ## Quick command reference

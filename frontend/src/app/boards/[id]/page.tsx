@@ -47,6 +47,7 @@ import { BoardColumnView } from "@/components/board/board-column-view";
 import { CardModal } from "@/components/board/card-modal";
 import { CardFace } from "@/components/board/sortable-card";
 import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
+import { RoleBadge, ShareModal } from "@/components/board/share-modal";
 
 // --- pure helpers over the nested board (used by the drag handlers) ---
 
@@ -128,6 +129,13 @@ function BoardContent() {
   // The card currently open in the modal, or null. Held by id-carrying object so edits
   // reflect immediately when we refresh it from state.
   const [openCard, setOpenCard] = useState<Card | null>(null);
+  const [sharing, setSharing] = useState(false);
+
+  // Permissions, derived once from the role the server sent with the board and then threaded
+  // down as plain booleans — components shouldn't each re-derive policy from a role string.
+  // Null-safe: before the board loads nobody may edit anything.
+  const canEdit = board !== null && board.myRole !== "VIEWER";
+  const isOwner = board !== null && board.myRole === "OWNER";
 
   const load = useCallback(async () => {
     setStatus("loading");
@@ -246,7 +254,9 @@ function BoardContent() {
   };
 
   function handleDragStart(event: DragStartEvent) {
-    if (board === null) return;
+    // Every sortable is already `disabled` for a viewer; this is the belt to that pair of
+    // braces, since a sensor we add later shouldn't be able to start a move behind our back.
+    if (board === null || !canEdit) return;
     snapshotRef.current = board;
     const activeId = String(event.active.id);
     if (event.active.data.current?.type === "column") {
@@ -262,7 +272,7 @@ function BoardContent() {
   async function handleDragEnd(event: DragEndEvent) {
     setActiveCard(null);
     setActiveColumn(null);
-    if (board === null || event.over === null) return;
+    if (board === null || !canEdit || event.over === null) return;
     if (event.active.data.current?.type === "column") {
       await moveColumnEnd(event);
     } else {
@@ -412,9 +422,28 @@ function BoardContent() {
           >
             ← Boards
           </Link>
-          <BoardTitle name={board.name} onRename={handleRenameBoard} />
+          {isOwner ? (
+            <BoardTitle name={board.name} onRename={handleRenameBoard} />
+          ) : (
+            <h1 className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              {board.name}
+            </h1>
+          )}
+          {/* Owning is the unremarkable case — only a shared-in role is worth labelling. */}
+          {!isOwner && <RoleBadge role={board.myRole} />}
         </div>
-        <InlineConfirmButton onConfirm={handleDeleteBoard} label="Delete board" />
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setSharing(true)}
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+          >
+            Share
+          </button>
+          {isOwner && (
+            <InlineConfirmButton onConfirm={handleDeleteBoard} label="Delete board" />
+          )}
+        </div>
       </header>
 
       {moveError && (
@@ -446,13 +475,14 @@ function BoardContent() {
                 key={column.id}
                 column={column}
                 cards={cards}
+                canEdit={canEdit}
                 onRename={(title) => handleRenameColumn(column.id, title)}
                 onDelete={() => handleDeleteColumn(column.id)}
                 onCreateCard={(title) => handleAddCard(column.id, title)}
                 onCardClick={setOpenCard}
               />
             ))}
-            <AddColumn onAdd={handleAddColumn} />
+            {canEdit && <AddColumn onAdd={handleAddColumn} />}
           </div>
         </SortableContext>
 
@@ -470,10 +500,15 @@ function BoardContent() {
       {openCard && (
         <CardModal
           card={openCard}
+          canEdit={canEdit}
           onClose={() => setOpenCard(null)}
           onSave={handleSaveCard}
           onDelete={handleDeleteCard}
         />
+      )}
+
+      {sharing && (
+        <ShareModal boardId={id} isOwner={isOwner} onClose={() => setSharing(false)} />
       )}
     </main>
   );

@@ -14,6 +14,7 @@ import {
 } from "@/lib/boards";
 import { Protected } from "@/components/protected";
 import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
+import { RoleBadge } from "@/components/board/share-modal";
 
 export default function DashboardPage() {
   return (
@@ -145,7 +146,13 @@ function DashboardContent() {
   );
 }
 
-/** One board in the list: open it, rename inline, or delete (two-step). */
+/**
+ * One board in the list: open it, and — if you own it — rename inline or delete (two-step).
+ *
+ * Since M4 this list also contains boards shared *with* you, so a row has to say which is which:
+ * a role badge on anything you don't own, and no rename/delete controls there (the server would
+ * refuse them anyway).
+ */
 function BoardRow({
   board,
   onRename,
@@ -157,6 +164,7 @@ function BoardRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(board.name);
+  const isOwner = board.myRole === "OWNER";
 
   async function save() {
     const next = name.trim();
@@ -171,7 +179,7 @@ function BoardRow({
 
   return (
     <li className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-      {editing ? (
+      {editing && isOwner ? (
         <input
           autoFocus
           value={name}
@@ -195,14 +203,19 @@ function BoardRow({
         </Link>
       )}
       <div className="flex shrink-0 items-center gap-3">
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          className="text-xs font-medium text-zinc-500 transition hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
-        >
-          Rename
-        </button>
-        <InlineConfirmButton onConfirm={() => onDelete(board.id)} />
+        {!isOwner && <RoleBadge role={board.myRole} />}
+        {isOwner && (
+          <>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="text-xs font-medium text-zinc-500 transition hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Rename
+            </button>
+            <InlineConfirmButton onConfirm={() => onDelete(board.id)} />
+          </>
+        )}
       </div>
     </li>
   );

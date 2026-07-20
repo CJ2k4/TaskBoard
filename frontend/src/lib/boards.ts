@@ -1,20 +1,34 @@
 /**
- * Typed client for the board / column / card API (Milestone 2).
+ * Typed client for the board / column / card API (Milestone 2, extended in M3 and M4).
  *
- * Every endpoint here is authenticated and owner-scoped on the server, so each function takes
+ * Every endpoint here is authenticated and role-checked on the server, so each function takes
  * the `authFetch` from `useAuth()` — that wrapper attaches the access token and handles a
  * mid-session token refresh transparently. The types mirror the backend's response DTOs
  * (`BoardResponse`, `BoardDetailResponse`, `ColumnResponse`, `CardResponse`); `rank` is a
- * server-owned LexoRank string the client only reads (never sets — moves are M3).
+ * server-owned LexoRank string the client only reads (never sets — the server resolves moves).
+ *
+ * Sharing/membership calls live next door in `members.ts`.
  */
 
 /** A function that performs an authenticated API call. Matches `useAuth().authFetch`. */
 export type AuthFetch = <T>(path: string, init?: RequestInit) => Promise<T>;
 
+/**
+ * A member's role on a board, mirroring the backend enum. Capabilities are cumulative:
+ * OWNER ⊃ EDITOR ⊃ VIEWER.
+ */
+export type Role = "OWNER" | "EDITOR" | "VIEWER";
+
 export type Board = {
   id: string;
   name: string;
   ownerId: string;
+  /**
+   * The *caller's* role on this board — not a property of the board itself. The server sends it
+   * with every board payload so the UI can decide what to render before the user tries anything
+   * (and gets a 403 for their trouble).
+   */
+  myRole: Role;
   createdAt: string;
   updatedAt: string;
 };
