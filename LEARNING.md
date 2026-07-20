@@ -2250,12 +2250,12 @@ and the card *behind* the modal updated.
 **How we verified** (two accounts, one browser + curl for the other user): a card created,
 renamed, moved across columns, and deleted by the other user each appeared without a reload; a
 column reorder rearranged live; echo-suppression kept an own-drag clean; the open-modal notice
-fired without eating the draft; a fresh load connects straight to "Live". The one thing I could
-*not* capture visually was the amber "Reconnecting…" state and the resync — in this environment
-the browser tab is torn down whenever the backend process is killed, so I couldn't watch the
-drop-and-recover. The logic is small (`onWebSocketClose → offline`, stompjs auto-reconnect,
-`onConnect`-when-already-connected → resync) and the connect path is proven, but the reconnect
-visual is unverified and worth a manual check.
+fired without eating the draft; a fresh load connects straight to "Live". The reconnect path —
+`onWebSocketClose → offline` (amber "Reconnecting…"), stompjs auto-reconnect, and
+`onConnect`-when-already-connected → resync — was confirmed by a manual drop-and-recover: killing
+the backend flipped the dot to amber, and restarting it returned to green "Live" on its own with
+no page reload. (I couldn't capture this one in-session, because the sandbox tears the browser
+tab down whenever the backend process is killed.)
 
 ```bash
 cd frontend
