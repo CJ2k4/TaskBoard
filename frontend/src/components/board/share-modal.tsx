@@ -28,10 +28,13 @@ import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
 export function ShareModal({
   boardId,
   isOwner,
+  refreshSignal,
   onClose,
 }: {
   boardId: string;
   isOwner: boolean;
+  /** Bumped by the board page on any live MEMBER_* event, so an open roster stays current. */
+  refreshSignal?: number;
   onClose: () => void;
 }) {
   const { authFetch } = useAuth();
@@ -49,9 +52,11 @@ export function ShareModal({
     }
   }, [authFetch, boardId]);
 
+  // Loads on open, and again whenever `refreshSignal` changes — a live membership change
+  // elsewhere. `load` is stable, so this is one refetch per signal, no churn.
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, refreshSignal]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

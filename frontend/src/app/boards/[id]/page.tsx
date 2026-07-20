@@ -50,6 +50,7 @@ import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
 import { RoleBadge, ShareModal } from "@/components/board/share-modal";
 import { applyBoardEvent, type BoardEvent } from "@/lib/board-events";
 import { useBoardEvents, type ConnectionState } from "@/lib/realtime";
+import type { Membership } from "@/lib/members";
 
 // --- pure helpers over the nested board (used by the drag handlers) ---
 
@@ -136,6 +137,11 @@ function BoardContent() {
   // their change ("edited" here) or tell us the card is gone ("deleted").
   const [openCardConflict, setOpenCardConflict] = useState<"edited" | "deleted" | null>(null);
   const [sharing, setSharing] = useState(false);
+  // Set when the board is pulled out from under us mid-view — deleted by its owner, or our own
+  // access revoked. Holds the message to show instead of yanking the page away. (M5 Pass B.)
+  const [goneReason, setGoneReason] = useState<string | null>(null);
+  // Bumped on any MEMBER_* event, so an open Share modal knows to refetch its roster.
+  const [memberEventNonce, setMemberEventNonce] = useState(0);
 
   // Permissions, derived once from the role the server sent with the board and then threaded
   // down as plain booleans — components shouldn't each re-derive policy from a role string.
@@ -162,8 +168,33 @@ function BoardContent() {
   function handleBoardEvent(event: BoardEvent) {
     // Our own change, echoed back. We already applied it optimistically and reconciled to the
     // server's rank; re-applying would fight an in-flight drag. (The server broadcasts to the
-    // actor too, precisely so we can recognize and skip it here.)
+    // actor too, precisely so we can recognize and skip it here.) This also means an owner never
+    // processes the echo of their own rename/delete/member-management — the optimistic paths stand.
     if (event.actorId === user?.id) return;
+
+    // --- board- and member-level events (Pass B): identity- or navigation-dependent ---
+
+    if (event.type === "BOARD_DELETED") {
+      // The owner deleted the board. Show it, rather than snatching the page away.
+      setGoneReason("This board was deleted.");
+      return;
+    }
+    if (event.type.startsWith("MEMBER_")) {
+      const member = event.payload as Membership;
+      const aboutMe = member.userId === user?.id;
+      if (event.type === "MEMBER_REMOVED" && aboutMe) {
+        setGoneReason("You no longer have access to this board.");
+        return;
+      }
+      if (event.type === "MEMBER_UPDATED" && aboutMe) {
+        // My role changed live: canEdit / isOwner are derived from board.myRole, so patching it
+        // makes a demotion hide the edit controls (and a promotion reveal them) with no reload.
+        setBoard((prev) => (prev === null ? prev : { ...prev, myRole: member.role }));
+      }
+      // Any membership change nudges an open Share modal to refetch its roster.
+      setMemberEventNonce((n) => n + 1);
+      return;
+    }
 
     // If the change touches the card we have open, flag it — but never rewrite the fields the
     // user is editing. A delete wins over a prior edit flag: the card is simply gone.
@@ -435,6 +466,18 @@ function BoardContent() {
     router.replace("/dashboard");
   }
 
+  // The board was deleted or our access was revoked mid-view — takes precedence over whatever
+  // we were showing. A calm note beats yanking the page out from under the user.
+  if (goneReason !== null) {
+    return (
+      <CenteredNote>
+        {goneReason}{" "}
+        <Link href="/dashboard" className="underline">
+          Back to your boards
+        </Link>
+      </CenteredNote>
+    );
+  }
   if (status === "loading") {
     return <CenteredNote>Loading board…</CenteredNote>;
   }
@@ -557,7 +600,12 @@ function BoardContent() {
       )}
 
       {sharing && (
-        <ShareModal boardId={id} isOwner={isOwner} onClose={() => setSharing(false)} />
+        <ShareModal
+          boardId={id}
+          isOwner={isOwner}
+          refreshSignal={memberEventNonce}
+          onClose={() => setSharing(false)}
+        />
       )}
     </main>
   );

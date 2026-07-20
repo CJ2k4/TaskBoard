@@ -2262,15 +2262,83 @@ cd frontend
 npm run build   # clean
 ```
 
+### Step 5.x-B — Board & membership events, live (Pass B) · _2026-07-20_
+
+**Goal:** finish M5. The five events Pass A left as no-ops — `BOARD_UPDATED`, `BOARD_DELETED`,
+and the three `MEMBER_*` — now do something: a rename lands in place, a role change flips your
+edit controls without a reload, and losing access sends you home gracefully.
+
+**Files:**
+
+- `lib/board-events.ts` (`BOARD_UPDATED` case + `BoardSummary` type)
+- `app/boards/[id]/page.tsx` (the identity/navigation events + a "gone" terminal state)
+- `components/board/share-modal.tsx` (`refreshSignal` → refetch roster)
+
+> **Concepts:** pure-vs-identity event split · deriving UI (`canEdit`) from live state · a
+> terminal note instead of a redirect · refetch-by-signal for state you don't own
+
+**The split that organizes the whole pass.** Pass A's card/column events change the shared canvas
+*identically for everyone*, so a pure `applyBoardEvent(board, event)` reducer handles them. These
+five don't fit that mould:
+
+- `BOARD_UPDATED` (rename) *is* universal → it's the one case that joins the reducer. It patches
+  `name` only — never `myRole` (the payload is `BoardSummary`, which deliberately omits it,
+  because role is per-caller and a broadcast has no single caller) and never `columns`.
+- The other four are **identity-dependent** (does this role change / removal concern *me*?) or
+  **side-effectful** (a deleted board has to take me somewhere). A pure reducer has neither the
+  user id nor a router. So they stay in the page's `handleBoardEvent`, where `user`, the board
+  state, and the modal live. Trying to force them into the reducer would mean threading identity
+  and navigation through a function whose whole value is being pure.
+
+**Role changes are just `myRole` state.** `canEdit`/`isOwner` are already derived from
+`board.myRole` (M4). So a live demotion is one line — `setBoard(prev => ({ ...prev, myRole:
+member.role }))` — and every consequence (grips, composers, delete buttons, the badge) falls out
+of the existing render. Verified by demoting an Editor mid-view: the controls vanished; promoting
+back, they returned. No reload, no special-casing each control.
+
+**Being sent home is a state, not a redirect.** When the board is deleted under you, or your
+access is revoked, the tempting move is `router.replace("/dashboard")` — but yanking the page
+away mid-glance is jarring and easy to miss. Instead a `goneReason` string drives a calm terminal
+note ("This board was deleted." / "You no longer have access to this board.") with a back link,
+reusing the exact `CenteredNote` the not-found branch already uses. No new navigation, and the
+user leaves on their own terms.
+
+**Refetch the roster on a signal, don't re-derive it.** The share modal owns its own member list.
+When a live `MEMBER_*` event arrives, rather than teach the page to merge added/updated/removed
+rows into that list (duplicating reducer logic for a handful of rows), the page bumps a nonce and
+the modal refetches when it changes. Refetch is always correct and the list is tiny. It only
+matters while the modal is open — closed, it's unmounted and loads fresh on next open. Verified:
+with a non-owner's roster open, an invite made elsewhere appeared in it live.
+
+**Echo suppression carries over for free.** The `actorId === user.id` early-return added in Pass A
+means an owner never processes the echo of their own rename / delete / member change — the
+optimistic paths (`handleRenameBoard`, `handleDeleteBoard`, the modal's own handlers) already
+updated the view, so the broadcast is correctly ignored.
+
+**How we verified** (two accounts, browser as the member + curl as the owner): rename appeared
+live with role/columns intact; a demote hid every edit control and a promote restored them; an
+open roster picked up a new invite; an eviction and a board deletion each showed their terminal
+note with no console errors and no stuck socket.
+
+```bash
+cd frontend
+npm run build   # clean
+```
+
 ### Where M5 stands
 
 Backend: ✅ STOMP endpoint with JWT-authenticated CONNECT · ✅ membership-checked SUBSCRIBE ·
 ✅ every card/column/board/member mutation broadcast after commit · 105 tests.
 
-Frontend: ✅ **(Pass A)** STOMP client, subscribe on board open, `CARD_*`/`COLUMN_*` applied live
-in rank order, own-echo skipped via `actorId`, connection indicator, refetch-on-reconnect,
-open-card conflict notice. ⬜ **(Pass B)** `BOARD_UPDATED`/`BOARD_DELETED` and `MEMBER_*` — live
-role change, mid-session eviction, roster refresh.
+Frontend: ✅ **(Pass A)** STOMP client, live `CARD_*`/`COLUMN_*`, own-echo skip, connection
+indicator, refetch-on-reconnect, open-card conflict notice. ✅ **(Pass B)** `BOARD_UPDATED`
+rename in place, live role change (`canEdit` flips), graceful eviction / board-deletion terminal
+state, roster refresh on a signal.
+
+**🎉 Milestone 5 complete — front to back. And with it, M0–M5: the project's entire planned
+scope.** TaskBoard is a real-time collaborative Kanban board — shared boards with per-role
+permissions, drag-and-drop ordering the server arbitrates, and every change flowing to everyone
+watching, live.
 
 ---
 

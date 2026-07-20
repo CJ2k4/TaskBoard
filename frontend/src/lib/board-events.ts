@@ -31,6 +31,18 @@ export type BoardEventType =
 /** The payload of any `*_DELETED` event: just the id of the thing that's now gone. */
 export type DeletedRef = { id: string };
 
+/**
+ * The payload of `BOARD_UPDATED`, mirroring the server's `BoardSummary`. Deliberately carries
+ * no `myRole`: that's a fact about whoever asked, and a broadcast has no single asker.
+ */
+export type BoardSummary = {
+  id: string;
+  name: string;
+  ownerId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 /** One message off `/topic/board/{boardId}`, mirroring the server's `BoardEvent`. */
 export type BoardEvent = {
   type: BoardEventType;
@@ -121,8 +133,16 @@ export function applyBoardEvent(board: BoardDetail, event: BoardEvent): BoardDet
           (c) => c.column.id !== (event.payload as DeletedRef).id,
         ),
       };
+    case "BOARD_UPDATED": {
+      // A rename is universal — every viewer sees the same new name. Take only the board's own
+      // fields; never touch `myRole` (per-caller, absent from the payload) or `columns`.
+      const summary = event.payload as BoardSummary;
+      return { ...board, name: summary.name, updatedAt: summary.updatedAt };
+    }
     default:
-      // BOARD_* and MEMBER_* — handled in Pass B. No-op keeps unknown types harmless.
+      // BOARD_DELETED and MEMBER_* are identity- or navigation-dependent, so the board page
+      // handles them where `user`/router/modal state live. No-op here keeps them (and any
+      // unknown type) harmless in the pure reducer.
       return board;
   }
 }
