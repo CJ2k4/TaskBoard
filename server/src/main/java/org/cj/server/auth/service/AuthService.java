@@ -3,6 +3,7 @@ package org.cj.server.auth.service;
 import java.util.Locale;
 import java.util.UUID;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -27,10 +28,13 @@ public class AuthService {
 
     private final UserRepository users;
     private final PasswordEncoder passwordEncoder;
+    private final ApplicationEventPublisher events;
 
-    public AuthService(UserRepository users, PasswordEncoder passwordEncoder) {
+    public AuthService(UserRepository users, PasswordEncoder passwordEncoder,
+                       ApplicationEventPublisher events) {
         this.users = users;
         this.passwordEncoder = passwordEncoder;
+        this.events = events;
     }
 
     /**
@@ -45,7 +49,12 @@ public class AuthService {
             throw new ConflictException("Email already registered");
         }
         String hash = passwordEncoder.encode(req.password());
-        return users.save(User.create(email, hash, req.name().trim()));
+        User user = users.save(User.create(email, hash, req.name().trim()));
+        // Announce the sign-in so other features can react (e.g. pending-invite resolution).
+        // Published inside the transaction: listeners join it, so activation is atomic with
+        // the registration itself.
+        events.publishEvent(new UserSignedInEvent(user.getId(), user.getEmail()));
+        return user;
     }
 
     /**
@@ -68,6 +77,9 @@ public class AuthService {
                 || !passwordEncoder.matches(req.password(), user.getPasswordHash())) {
             throw new BadCredentialsException("Invalid email or password");
         }
+        // This method runs in a read-only transaction, so any listener that writes (invite
+        // resolution) must open its own transaction (REQUIRES_NEW on the listener side).
+        events.publishEvent(new UserSignedInEvent(user.getId(), user.getEmail()));
         return user;
     }
 

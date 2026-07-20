@@ -41,7 +41,9 @@ class AuthServiceTest {
 
     @BeforeEach
     void setUp() {
-        authService = new AuthService(users, passwordEncoder);
+        // No-op event publisher: these tests cover auth logic; the sign-in event's effect
+        // (pending-invite resolution) has its own integration test.
+        authService = new AuthService(users, passwordEncoder, event -> { });
     }
 
     @Test

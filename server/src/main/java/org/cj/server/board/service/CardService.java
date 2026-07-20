@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.cj.server.board.dto.MoveCardRequest;
 import org.cj.server.board.entity.BoardColumn;
 import org.cj.server.board.entity.Card;
+import org.cj.server.board.entity.Role;
 import org.cj.server.board.repository.BoardColumnRepository;
 import org.cj.server.board.repository.CardRepository;
 import org.cj.server.common.exception.NotFoundException;
@@ -17,7 +18,8 @@ import org.cj.server.common.ranking.RankExhaustedException;
 
 /**
  * Card business logic. Like columns, every operation is authorized through
- * {@link BoardService#requireOwnedBoard} against the card's board.
+ * {@link BoardService#requireBoardAccess} against the card's board, at {@link Role#EDITOR} —
+ * cards are board content, so viewers can read them but never change them.
  *
  * <p>Two M2 specifics: new cards are <b>appended</b> within their column via {@link LexoRank},
  * and a card's denormalized {@code boardId} is set from its column at creation — so the
@@ -36,12 +38,12 @@ public class CardService {
         this.boardService = boardService;
     }
 
-    /** Append a card to the end of a column on an owned board. */
+    /** Append a card to the end of a column on a board the caller can edit. */
     @Transactional
     public Card create(UUID columnId, UUID userId, String title, String description) {
         BoardColumn column = columns.findById(columnId)
                 .orElseThrow(() -> new NotFoundException("Column not found"));
-        boardService.requireOwnedBoard(column.getBoardId(), userId);
+        boardService.requireBoardAccess(column.getBoardId(), userId, Role.EDITOR);
 
         String lastRank = cards.findFirstByColumnIdOrderByRankDesc(columnId)
                 .map(Card::getRank)
@@ -53,14 +55,14 @@ public class CardService {
 
     @Transactional
     public Card update(UUID cardId, UUID userId, String title, String description) {
-        Card card = requireCardOnOwnedBoard(cardId, userId);
+        Card card = requireCardOnBoard(cardId, userId, Role.EDITOR);
         card.edit(title, description);
         return cards.save(card);
     }
 
     @Transactional
     public void delete(UUID cardId, UUID userId) {
-        Card card = requireCardOnOwnedBoard(cardId, userId);
+        Card card = requireCardOnBoard(cardId, userId, Role.EDITOR);
         cards.delete(card);
     }
 
@@ -76,7 +78,7 @@ public class CardService {
      */
     @Transactional
     public Card move(UUID cardId, UUID userId, MoveCardRequest req) {
-        Card card = requireCardOnOwnedBoard(cardId, userId);
+        Card card = requireCardOnBoard(cardId, userId, Role.EDITOR);
 
         BoardColumn target = columns.findById(req.targetColumnId())
                 .orElseThrow(() -> new NotFoundException("Column not found"));
@@ -149,11 +151,14 @@ public class CardService {
         cards.saveAll(siblings);
     }
 
-    /** Load a card and assert the caller owns its board, else 404. */
-    private Card requireCardOnOwnedBoard(UUID cardId, UUID userId) {
+    /**
+     * Load a card and assert the caller holds at least {@code required} on its board — 404 if
+     * the card is gone or the board isn't theirs, 403 if their role is too weak.
+     */
+    private Card requireCardOnBoard(UUID cardId, UUID userId, Role required) {
         Card card = cards.findById(cardId)
                 .orElseThrow(() -> new NotFoundException("Card not found"));
-        boardService.requireOwnedBoard(card.getBoardId(), userId);
+        boardService.requireBoardAccess(card.getBoardId(), userId, required);
         return card;
     }
 }

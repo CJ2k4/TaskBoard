@@ -67,6 +67,37 @@ public class BoardMembership {
                 Role.OWNER, MembershipStatus.ACTIVE, Instant.now());
     }
 
+    /**
+     * An invite for an email with no account yet: PENDING, identified only by
+     * {@code invitedEmail} (already normalized by the caller). Becomes ACTIVE via
+     * {@link #activate} when that email signs in for the first time.
+     */
+    public static BoardMembership invitePending(UUID boardId, String invitedEmail, Role role) {
+        return new BoardMembership(UUID.randomUUID(), boardId, null, invitedEmail,
+                role, MembershipStatus.PENDING, Instant.now());
+    }
+
+    /** An invite for an email that already has an account: immediately ACTIVE for that user. */
+    public static BoardMembership inviteActive(UUID boardId, UUID userId, Role role) {
+        return new BoardMembership(UUID.randomUUID(), boardId, userId, null,
+                role, MembershipStatus.ACTIVE, Instant.now());
+    }
+
+    /**
+     * Resolve a pending invite: the invited email now belongs to a real user. Attaches the
+     * user id and flips to ACTIVE. {@code invitedEmail} is kept for audit/history — the row's
+     * identity from here on is {@code userId}.
+     */
+    public void activate(UUID userId) {
+        this.userId = userId;
+        this.status = MembershipStatus.ACTIVE;
+    }
+
+    /** Change this member's role (EDITOR ↔ VIEWER; the OWNER row is never re-roled). */
+    public void changeRole(Role role) {
+        this.role = role;
+    }
+
     public UUID getId() {
         return id;
     }

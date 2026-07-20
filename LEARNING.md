@@ -1719,6 +1719,253 @@ Next: **M4 — sharing, invites & role enforcement** (owner/editor/viewer), then
 
 ---
 
+## Milestone 4 — Sharing, invites & role enforcement
+
+**Goal of the whole milestone:** a board stops being single-user. The owner invites people by
+email; invitees get access on their next sign-in; and every endpoint enforces per-board roles —
+`VIEWER` read-only, `EDITOR` mutates columns/cards, `OWNER` additionally manages the board and
+its members. This phase is the **backend**; the invite/member UI is the phase after.
+
+The satisfying part: M2 already did the groundwork. The `board_membership` table, its
+constraints (including the partial-unique pending-invite index), and the owner's auto-created
+`OWNER`/`ACTIVE` row have been in place since `V3` — so M4 needs **no migration and no
+backfill**. We planted this deliberately; now it pays off.
+
+Build order: **data first, meaning second.** 4.1 creates memberships via the API (owner-only
+management), 4.2 makes pending invites resolve at sign-in, and only then does 4.3 flip the
+authorization switch so memberships actually grant access. Mid-phase, an invite exists but
+grants nothing — a harmless, reviewable intermediate state.
+
+### Step 4.1 — Invites & member management · _2026-07-19_
+
+**Goal:** the owner can invite an email, see the member list, change a member's role, and
+remove members or revoke invites.
+
+**Files:**
+
+- `board/entity/BoardMembership.java` (new factories `invitePending`/`inviteActive`, mutators
+  `activate`/`changeRole`)
+- `board/repository/BoardMembershipRepository.java` (four new derived queries)
+- `board/dto/{CreateInviteRequest,UpdateMembershipRequest,MembershipResponse}.java`
+- `board/service/MembershipService.java` · `board/controller/MembershipController.java`
+- `test/.../board/MembershipIntegrationTest.java` (10 tests)
+
+> **Concepts:** invite-by-email design (pending vs immediate) · one row, two shapes · email
+> normalization as a matching contract · batch loading (avoiding N+1) · single-owner
+> invariant enforced in code · joining display data into a response DTO
+
+**One row, two shapes.** A `board_membership` row is either an **ACTIVE member** (has a
+`user_id`) or a **PENDING invite** (only an `invited_email` — the person hasn't registered
+yet). `invite(...)` picks the shape at creation time: if `UserRepository.findByEmail` finds an
+account, the membership is born ACTIVE and takes effect immediately; otherwise it's born
+PENDING and waits for that email to sign up (Step 4.2). The V3 `CHECK (user_id IS NOT NULL OR
+invited_email IS NOT NULL)` guarantees every row identifies *someone*.
+
+**Email normalization is a contract, not a nicety.** Registration lowercases+trims emails
+(Step 1.2). Invites must normalize the *same way*, or `Bob@X.com`'s invite would never match
+`bob@x.com`'s sign-in and would hang pending forever. The test invites a mixed-case address
+and asserts the stored invite is lowercase.
+
+**The single-owner invariant, enforced three ways.** A board has exactly one OWNER, so:
+inviting *as* OWNER → 400; re-roling anyone *to* OWNER → 400; changing or removing the owner's
+own row → 400. (Inviting the owner's email is a 409 — they're already a member.) Ownership
+transfer is deliberately out of scope for v1.
+
+**Small performance habit worth seeing.** `listMembers` needs each member's name/email, which
+live in `app_user`, not on the membership row. The naive loop would issue one user query per
+member — the classic **N+1 problem**. Instead we collect the user ids and load them in one
+`findAllById` batch, then map in memory. At ≤10 members it wouldn't matter; the habit does.
+
+**Routes** follow the established shape — create/list under the parent
+(`POST /api/boards/{id}/invites`, `GET /api/boards/{id}/members`), mutate by id
+(`PATCH`/`DELETE /api/memberships/{id}`). All owner-guarded via the same
+`requireOwnedBoard` as everything else (4.3 relaxes the member list to any member).
+
+**How we verified.** Ten full-stack tests: unknown email → PENDING (and listed after the
+owner); mixed-case email stored normalized; existing user → ACTIVE with `name` joined from
+`app_user`; duplicate active + duplicate pending → 409; owner self-invite → 409 and
+role=OWNER → 400; EDITOR↔VIEWER re-role works but →OWNER → 400; the owner row can't be
+changed or removed; removing a member and revoking a pending invite shrink the list back to
+just the owner; a non-owner gets 404 on all four routes; malformed email → 400.
+
+```bash
+cd server
+./mvnw test -Dtest=MembershipIntegrationTest   # 10 passing
+```
+
+All green. The rows exist — next, pending invites come alive when their email signs in.
+
+### Step 4.2 — Pending invites resolve at sign-in (application events) · _2026-07-19_
+
+**Goal:** the moment an invited email registers (or logs in), its PENDING invites flip to
+ACTIVE memberships — the shared board is just *there* on their first dashboard load.
+
+**Files:**
+
+- `auth/service/UserSignedInEvent.java` (the announcement)
+- `auth/service/AuthService.java` (publishes it in `register` + `authenticate`)
+- `board/service/PendingInviteResolver.java` (the listener)
+- `test/.../board/InviteResolutionIntegrationTest.java` (3 tests)
+- `test/.../auth/service/AuthServiceTest.java` (constructor gained the publisher — no-op lambda)
+
+> **Concepts:** Spring application events · dependency direction & package cycles ·
+> `@TransactionalEventListener(AFTER_COMMIT)` · `REQUIRES_NEW` · foreign keys vs uncommitted
+> rows · idempotent listeners
+
+**Why an event and not a method call.** The requirement reads "on login/register, resolve
+pending invites" — which sounds like `AuthService` should call the board feature. But the
+dependency arrow already points the other way (`board → auth`: board controllers use
+`AuthPrincipal`, the membership service reads `UserRepository`). Auth calling board back would
+create a **package cycle** — the classic sign that two modules are dissolving into one. A
+Spring **application event** inverts it: `AuthService` publishes `UserSignedInEvent(userId,
+email)` and knows nothing else; `PendingInviteResolver` in the board feature listens. Auth
+stays reusable; features stay separable.
+
+**The transaction choreography — where the real bug lived.** First draft: a plain
+`@EventListener` with `REQUIRES_NEW`. Looks fine, and would have **failed on every
+registration**: the event publishes *inside* `register()`'s transaction, so a listener opening
+its *own* transaction can't see the not-yet-committed user row — and inserting a membership
+that references it violates the `board_membership.user_id` foreign key. The fix is the
+canonical pairing:
+
+- `@TransactionalEventListener(phase = AFTER_COMMIT)` — don't run until the signup transaction
+  has committed and the user row exists for everyone; plus
+- `@Transactional(REQUIRES_NEW)` — the original transaction is finished, so the listener's
+  writes need a fresh one. (Also neatly covers login, whose transaction is *read-only* — it
+  still commits, the event still fires, and the writes happen in the new transaction.)
+
+Worth remembering as a rule of thumb: **a listener that writes rows referencing data from the
+publishing transaction should be `AFTER_COMMIT` + `REQUIRES_NEW`.**
+
+**The listener itself is small and idempotent.** Find PENDING invites for the email; for each,
+attach the user id and flip to ACTIVE. One edge: if the user somehow already holds a
+membership on that board (double-invited by different routes), `UNIQUE(board_id, user_id)`
+forbids a second row — the stale pending invite is deleted instead. Firing again on a later
+login finds nothing pending and does nothing.
+
+**How we verified.** Three full-stack tests where the *trigger is the auth endpoint itself*:
+invite an unregistered email → PENDING → that email registers → the members list shows ACTIVE
+with the user id, the invited role kept, and the name now joined from `app_user`; a later
+login is harmless (idempotence); and two boards inviting the same unregistered email both
+resolve on one registration. (The compile also flushed out that `AuthServiceTest` constructs
+`AuthService` by hand — it now passes a no-op `event -> { }` publisher, keeping the unit test
+focused on auth logic.)
+
+```bash
+cd server
+./mvnw test -Dtest='InviteResolutionIntegrationTest,AuthServiceTest'   # 9 passing
+```
+
+All green. Memberships now exist and resolve — the finale makes them *mean* something.
+
+### Step 4.3 — Role enforcement: membership becomes the source of truth · _2026-07-20_
+
+**Goal:** flip the switch. Until now every board/column/card operation asked "do you *own* this
+board?"; from here it asks "what is your *role* on this board, and is it enough?" — the moment
+an invite actually buys the invitee something.
+
+**Files:**
+
+- `board/service/BoardService.java` (`requireOwnedBoard` → `requireBoardAccess(…, Role)`;
+  `listOwned` → `listAccessible`)
+- `board/service/{ColumnService,CardService,MembershipService}.java` (call sites pass the role
+  each operation needs)
+- `board/repository/BoardRepository.java` (`findByOwnerIdOrderByCreatedAtDesc` →
+  `findByIdInOrderByCreatedAtDesc`)
+- `board/dto/{BoardResponse,BoardDetailResponse,BoardWithRole}.java` (`myRole` on the wire)
+- `board/controller/BoardController.java`
+- `test/.../board/RoleEnforcementIntegrationTest.java` (8 tests)
+
+> **Concepts:** capability ladder on an enum · 403 vs 404 as an information-disclosure choice ·
+> one guard, many required levels · authorization at the service layer · avoiding N+1 when a
+> response needs per-row context
+
+**One guard, three levels.** The temptation is a method per role — `requireOwner`,
+`requireEditor`, `requireViewer`. Instead there's a single `requireBoardAccess(boardId, userId,
+Role required)`, and the ladder lives on the enum:
+
+```java
+public boolean atLeast(Role required) {
+    return this.ordinal() <= required.ordinal();   // OWNER < EDITOR < VIEWER, declaration order
+}
+```
+
+Cumulative capabilities fall out for free: an OWNER passes an EDITOR check, an EDITOR passes a
+VIEWER check. Using `ordinal()` is normally a code smell — it's only safe here **because
+storage is `@Enumerated(STRING)`**, so the ordinal never reaches the database and reordering
+the constants can't corrupt data. (It would still change the meaning of the ladder, which is
+why the enum's javadoc now says "declared strongest-first" out loud.)
+
+**403 and 404 mean different things, and the difference is a security decision.**
+
+| Caller | Result |
+|---|---|
+| no ACTIVE membership | **404** — same answer as a board that doesn't exist |
+| ACTIVE member, role too weak | **403** — you're here, just not allowed *this* |
+
+Returning 403 to a stranger would confirm the board is real: an attacker with a list of UUIDs
+could map which ones exist. A non-member gets the same reply for a real board and a fictional
+one. A *member* already knows the board exists, so hiding behind 404 would only confuse them —
+403 is both honest and more useful. A PENDING invite deliberately grants nothing; only
+`status = ACTIVE` counts.
+
+**Ownership stopped being a column and became a row.** `requireBoardAccess` never reads
+`board.ownerId` — it reads the caller's `board_membership` row and checks the role. The OWNER
+row written back in M2 alongside every board (planted for exactly this day) is what proves
+ownership now. One table answers every access question; `board.owner_id` survives only as
+display data.
+
+**The change that actually made sharing visible.** Guards alone weren't enough: `GET
+/api/boards` still ran `findByOwnerId…`, so an invited editor could open a shared board by URL
+but never *see* it listed. It became `listAccessible` — walk the caller's ACTIVE memberships,
+fetch those boards. Sharing you can't discover isn't sharing.
+
+That same query hands back the role for free, which is why `BoardWithRole` exists: the
+controller needs `myRole` per board, and re-querying it per row would be a textbook N+1. The
+one place a role isn't looked up at all is board *create* and *rename* — creating makes you the
+owner, and renaming is owner-only, so a successful call already proves the role.
+
+**`myRole` on the wire.** Both `BoardResponse` and `BoardDetailResponse` now carry the caller's
+role. Without it the frontend would have to discover permissions by attempting writes and
+reading 403s — the UI must know *before* it renders whether to show an "add card" box.
+
+**How we verified.** `RoleEnforcementIntegrationTest` drives real HTTP as real signed-in users.
+The trick that gives it teeth: the *entire* write surface is built once as a list of request
+builders and replayed per role — editor gets 2xx on all eight, viewer gets 403 on all eight,
+stranger gets 404 on all eight. Checking a sample instead of the whole list is exactly how a
+permission hole ships. Plus: role appears correctly in each user's board list, removing a
+member makes the board invisible again, and a demoted editor keeps read access while losing
+writes.
+
+The strongest signal, though, is that **all 88 pre-existing tests passed unchanged** — they act
+as the board owner throughout, so an owner's experience had to be byte-for-byte identical after
+swapping the entire authorization model underneath.
+
+```bash
+cd server
+./mvnw test    # 96 passing (88 existing + 8 new)
+```
+
+---
+
+### Where M4 stands
+
+Backend: ✅ invites (pending + immediate) · ✅ member list / re-role / remove · ✅ pending invites
+resolve at sign-in · ✅ **role enforcement across every endpoint** · ✅ shared boards appear in
+`GET /api/boards` with `myRole` · 96 tests.
+
+Frontend: ⬜ not started — invite form, member list with roles, and read-only rendering for
+viewers.
+
+**Milestone 4 backend complete.** A board is now genuinely multi-user: the owner shares it, the
+invitee finds it waiting at next sign-in, and the server — not the UI — decides what each of
+them may do.
+
+Next: **M4 frontend**, then **M5** (real-time), whose WebSocket subscription check will reuse
+`requireBoardAccess` as-is.
+
+---
+
 ## Quick command reference
 
 ```bash
