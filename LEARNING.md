@@ -2057,6 +2057,143 @@ permissions after opening the event firehose is far harder. The subscription che
 
 ---
 
+## Milestone 5 — Real-time (WebSocket + STOMP)
+
+Goal: two browsers on one board see each other's work within a second. Everything before this
+milestone made a *correct* board; this one makes it a *shared* one.
+
+### Step 5.1 — The event pipeline: publish after commit, subscribe by membership · _2026-07-20_
+
+**Goal:** stand up the socket, prove identity on it, refuse anyone who isn't a member of the
+board they ask for, and broadcast every mutation to the board's topic — without the board
+services learning that WebSockets exist.
+
+**Files:**
+
+- `realtime/config/WebSocketConfig.java` (new — STOMP endpoint `/ws`, simple broker `/topic`)
+- `realtime/security/StompAuthChannelInterceptor.java` (new — CONNECT auth + SUBSCRIBE authz)
+- `realtime/security/StompSecurityException.java` (new)
+- `realtime/service/BoardEventBroadcaster.java` (new — the `AFTER_COMMIT` listener)
+- `realtime/dto/BoardEvent.java` (new — the wire format)
+- `board/service/BoardChangedEvent.java` (new — the domain event)
+- `board/dto/{BoardEventType,DeletedRef,BoardSummary}.java` (new)
+- `board/service/{Card,Column,Board,Membership}Service.java` (publish on every mutation)
+- `auth/security/SecurityConfig.java` (`/ws/**` handshake public)
+- `test/.../realtime/RealtimeIntegrationTest.java` (9 tests)
+
+> **Concepts:** application events as a dependency-inversion tool · `@TransactionalEventListener`
+> and why `AFTER_COMMIT` is non-negotiable · authenticating a protocol that has no headers ·
+> authorizing *subscriptions*, not just requests · testing a socket with a real socket
+
+**The services still don't know the socket exists.** `CardService.create` doesn't call a
+broadcaster; it publishes a `BoardChangedEvent` and moves on. The `realtime` package listens.
+This is the same trick M4.2 used to resolve pending invites, for the same reason: the arrow
+runs `realtime → board` only, so deleting the entire real-time package would leave the REST API
+working. A service that both writes a card *and* pushes a WebSocket frame is a service doing
+two jobs, and the second one fails in ways the first shouldn't care about.
+
+**`AFTER_COMMIT` is the whole design.** The event is published *inside* the write transaction
+but broadcast only once that transaction commits:
+
+```java
+@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+public void onBoardChanged(BoardChangedEvent event) {
+    messaging.convertAndSend("/topic/board/" + event.boardId(), BoardEvent.from(event));
+}
+```
+
+Broadcasting earlier would announce changes that can still roll back — subscribers would render
+a card that never existed. Worse than the phantom card is the *correction*: a client that reacts
+by refetching the board would read pre-commit state and "fix" itself to stale data. The cost of
+this choice is worth knowing — with the default `fallbackExecution = false`, an event published
+outside any transaction is **silently dropped**. That's acceptable only because every publisher
+is a `@Transactional` service method.
+
+**A protocol with no headers.** The browser's WebSocket API gives you no way to set an
+`Authorization` header on the upgrade request — so `/ws/**` is `permitAll()` at the HTTP layer.
+That looks alarming and isn't: the handshake is public, but the *connection* proves itself one
+frame later, on STOMP CONNECT, where a native header can carry the token.
+
+```java
+if (StompCommand.CONNECT.equals(command)) {
+    accessor.setUser(authenticate(accessor));      // verify JWT → principal on the session
+} else if (StompCommand.SUBSCRIBE.equals(command)) {
+    authorizeSubscription(accessor);               // membership check on the board topic
+}
+```
+
+One subtlety that costs an afternoon if you miss it: you must take the **mutable** accessor via
+`MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class)`. The more obvious
+`StompHeaderAccessor.wrap(message)` returns a *copy*, which accepts `setUser(…)` and then
+discards it — the session ends up anonymous with no error anywhere.
+
+**SUBSCRIBE is the real authorization moment.** A REST endpoint is checked per request; a
+subscription is checked *once* and then streams indefinitely. So the topic is parsed for its
+board id and run through `BoardService.requireBoardAccess(boardId, userId, Role.VIEWER)` — the
+exact guard the REST layer uses, called from a new place. Without it, any signed-in user could
+subscribe to any board id and watch it live: a hole straight through the permission model M4
+built so carefully, and one no REST test would ever catch.
+
+Failure here is **refusal, not degradation** — the opposite of the HTTP filter, which leaves a
+bad token anonymous and lets a 401 happen later. On a socket there is no "later": a subscription
+allowed to proceed is already streaming. So the interceptor throws, and Spring answers with an
+ERROR frame and closes the session. The refusal message is also deliberately vague — the guard
+distinguishes 404 from 403, but collapsing both here avoids handing out a board-existence
+oracle.
+
+**What the events carry.** Every message is `{type, boardId, actorId, at, payload}`. Two details
+earn their keep:
+
+- **`actorId`** — events go to *everyone*, including whoever caused them. The frontend already
+  applies drags optimistically, so it needs to recognize the echo of its own change and skip it.
+- **`MEMBER_REMOVED` carries the whole membership, not just an id** — the removed person is
+  almost certainly subscribed right now, and the `userId` is how they learn the person shown the
+  door was *them*.
+
+A related non-event: when a move triggers a **rank re-balance**, only the moved card is
+announced, even though every sibling's rank changed. Subscribers holding old ranks still sort
+into the same order (`spread` re-spaces without reordering), and clients never compute
+placements locally anyway — a move is intent the server resolves. And `BOARD_UPDATED` sends a
+new `BoardSummary` rather than `BoardResponse`, because `BoardResponse` carries `myRole`, which
+is a fact about *one* member and has no business in a message sent to all of them.
+
+**How we verified.** `RealtimeIntegrationTest` drives a real STOMP client over a real WebSocket
+against a real port — asserting that the broadcaster calls a mocked template would test the
+wiring *diagram* rather than the wiring. The REST half still goes through MockMvc, which shares
+the context, so a MockMvc write really does travel through the listener, the broker, and out to
+the socket. Both halves of the property get tests: changes **reach members** (card
+create/update/move/delete, column and board events, viewers included — read-only is not the
+same as offline), and changes **reach no one else** (non-member's SUBSCRIBE closes the session;
+events don't cross board topics; garbage, missing, and *refresh* tokens are all refused).
+
+Two failures worth recording, because both looked like "the server is broken" and neither was:
+
+1. **Six tests failed on silence.** The server log said `Broadcasting to 1 sessions` — it was
+   working perfectly. The test client used `StringMessageConverter`, which accepts `text/plain`
+   only and dropped every `application/json` frame without a word. Reading the server's own
+   debug log, rather than the test's assertion, is what found it in one pass.
+2. **The refusal tests asserted the error text** and got `ConnectionLostException: Connection
+   closed`. The server closes the socket so fast the ERROR frame loses the race. The assertion
+   was wrong, not the code: what matters is that no usable session comes back.
+
+```bash
+cd server
+./mvnw test    # 105 passing (96 existing + 9 new)
+```
+
+---
+
+### Where M5 stands
+
+Backend: ✅ STOMP endpoint with JWT-authenticated CONNECT · ✅ membership-checked SUBSCRIBE ·
+✅ every card/column/board/member mutation broadcast after commit · 105 tests.
+
+Frontend: ⬜ not started — STOMP client, subscribe on board open, apply incoming events to local
+state (skipping your own echo via `actorId`), unsubscribe on leave, refetch the whole board on
+reconnect.
+
+---
+
 ## Quick command reference
 
 ```bash

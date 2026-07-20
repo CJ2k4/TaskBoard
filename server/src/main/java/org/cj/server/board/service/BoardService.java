@@ -3,11 +3,15 @@ package org.cj.server.board.service;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.cj.server.board.dto.BoardDetailResponse;
+import org.cj.server.board.dto.BoardEventType;
+import org.cj.server.board.dto.BoardSummary;
 import org.cj.server.board.dto.BoardWithRole;
+import org.cj.server.board.dto.DeletedRef;
 import org.cj.server.board.entity.Board;
 import org.cj.server.board.entity.BoardColumn;
 import org.cj.server.board.entity.BoardMembership;
@@ -48,13 +52,16 @@ public class BoardService {
     private final BoardMembershipRepository memberships;
     private final BoardColumnRepository columns;
     private final CardRepository cards;
+    private final ApplicationEventPublisher events;
 
     public BoardService(BoardRepository boards, BoardMembershipRepository memberships,
-                        BoardColumnRepository columns, CardRepository cards) {
+                        BoardColumnRepository columns, CardRepository cards,
+                        ApplicationEventPublisher events) {
         this.boards = boards;
         this.memberships = memberships;
         this.columns = columns;
         this.cards = cards;
+        this.events = events;
     }
 
     /**
@@ -113,14 +120,25 @@ public class BoardService {
     public Board rename(UUID boardId, UUID userId, String name) {
         Board board = requireBoardAccess(boardId, userId, Role.OWNER);
         board.rename(name);
-        return boards.save(board);
+        Board saved = boards.save(board);
+        events.publishEvent(new BoardChangedEvent(
+                boardId, userId, BoardEventType.BOARD_UPDATED, BoardSummary.from(saved)));
+        return saved;
     }
 
-    /** Delete a board (owner only); the DB cascades to its memberships, columns, and cards. */
+    /**
+     * Delete a board (owner only); the DB cascades to its memberships, columns, and cards.
+     *
+     * <p>The BOARD_DELETED broadcast is the last thing anyone hears on this topic — it exists so
+     * members sitting on the board get sent home rather than staring at a board that no longer
+     * exists and discovering it on their next 404.
+     */
     @Transactional
     public void delete(UUID boardId, UUID userId) {
         Board board = requireBoardAccess(boardId, userId, Role.OWNER);
         boards.delete(board);
+        events.publishEvent(new BoardChangedEvent(
+                boardId, userId, BoardEventType.BOARD_DELETED, new DeletedRef(boardId)));
     }
 
     /**

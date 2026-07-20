@@ -3,9 +3,13 @@ package org.cj.server.board.service;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.cj.server.board.dto.BoardEventType;
+import org.cj.server.board.dto.ColumnResponse;
+import org.cj.server.board.dto.DeletedRef;
 import org.cj.server.board.dto.MoveColumnRequest;
 import org.cj.server.board.entity.BoardColumn;
 import org.cj.server.board.entity.Role;
@@ -31,11 +35,14 @@ public class ColumnService {
     private final BoardColumnRepository columns;
     private final CardRepository cards;
     private final BoardService boardService;
+    private final ApplicationEventPublisher events;
 
-    public ColumnService(BoardColumnRepository columns, CardRepository cards, BoardService boardService) {
+    public ColumnService(BoardColumnRepository columns, CardRepository cards, BoardService boardService,
+                         ApplicationEventPublisher events) {
         this.columns = columns;
         this.cards = cards;
         this.boardService = boardService;
+        this.events = events;
     }
 
     /** Append a column to the end of a board the caller can edit. */
@@ -46,14 +53,18 @@ public class ColumnService {
                 .map(BoardColumn::getRank)
                 .orElse(null);
         String rank = LexoRank.between(lastRank, null);
-        return columns.save(BoardColumn.create(boardId, title, rank));
+        BoardColumn saved = columns.save(BoardColumn.create(boardId, title, rank));
+        announce(saved, userId, BoardEventType.COLUMN_CREATED);
+        return saved;
     }
 
     @Transactional
     public BoardColumn rename(UUID columnId, UUID userId, String title) {
         BoardColumn column = requireColumnOnBoard(columnId, userId, Role.EDITOR);
         column.rename(title);
-        return columns.save(column);
+        BoardColumn saved = columns.save(column);
+        announce(saved, userId, BoardEventType.COLUMN_UPDATED);
+        return saved;
     }
 
     /** Delete a column, but only if it's empty — force the user to move/clear cards first. */
@@ -64,6 +75,8 @@ public class ColumnService {
             throw new ConflictException("Column is not empty; move or delete its cards first");
         }
         columns.delete(column);
+        events.publishEvent(new BoardChangedEvent(
+                column.getBoardId(), userId, BoardEventType.COLUMN_DELETED, new DeletedRef(column.getId())));
     }
 
     /**
@@ -91,7 +104,15 @@ public class ColumnService {
         }
 
         column.moveTo(rank);
-        return columns.save(column);
+        BoardColumn saved = columns.save(column);
+        announce(saved, userId, BoardEventType.COLUMN_MOVED);
+        return saved;
+    }
+
+    /** Tell the board that a column changed; the real-time layer relays it after commit. */
+    private void announce(BoardColumn column, UUID actorId, BoardEventType type) {
+        events.publishEvent(new BoardChangedEvent(
+                column.getBoardId(), actorId, type, ColumnResponse.from(column)));
     }
 
     /** The rank bounds a move must land between; either side may be null (open end). */

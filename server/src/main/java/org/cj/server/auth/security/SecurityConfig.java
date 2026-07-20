@@ -25,6 +25,8 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  * <ul>
  *   <li>{@code /api/health} and {@code /api/auth/**} — <b>public</b> (you can't have a token
  *       before you log in, and health is for uptime checks).</li>
+ *   <li>{@code /ws/**} — <b>public handshake</b>, authenticated at the STOMP layer instead;
+ *       see the comment on the rule below.</li>
  *   <li>everything else — <b>authenticated</b>: needs a valid access token, else 401 via
  *       {@link JwtAuthenticationEntryPoint}.</li>
  * </ul>
@@ -61,6 +63,13 @@ public class SecurityConfig {
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/api/health", "/api/auth/**").permitAll()
+                // The WebSocket *handshake* is public because it has to be: the browser's
+                // WebSocket API can't attach an Authorization header to the upgrade request.
+                // The socket is not unprotected — StompAuthChannelInterceptor demands a valid
+                // access token on the STOMP CONNECT frame and board membership on every
+                // SUBSCRIBE, so an unauthenticated connection can open but can never hear
+                // anything.
+                .requestMatchers("/ws/**").permitAll()
                 .anyRequest().authenticated())
             // Unauthenticated hits on protected routes → 401 JSON (not the default 403).
             .exceptionHandling(ex -> ex.authenticationEntryPoint(authenticationEntryPoint))

@@ -8,11 +8,13 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.cj.server.auth.entity.User;
 import org.cj.server.auth.repository.UserRepository;
+import org.cj.server.board.dto.BoardEventType;
 import org.cj.server.board.dto.CreateInviteRequest;
 import org.cj.server.board.dto.MembershipResponse;
 import org.cj.server.board.dto.UpdateMembershipRequest;
@@ -37,12 +39,14 @@ public class MembershipService {
     private final BoardMembershipRepository memberships;
     private final UserRepository users;
     private final BoardService boardService;
+    private final ApplicationEventPublisher events;
 
     public MembershipService(BoardMembershipRepository memberships, UserRepository users,
-                             BoardService boardService) {
+                             BoardService boardService, ApplicationEventPublisher events) {
         this.memberships = memberships;
         this.users = users;
         this.boardService = boardService;
+        this.events = events;
     }
 
     /**
@@ -72,7 +76,7 @@ public class MembershipService {
             }
             BoardMembership m = memberships.save(
                     BoardMembership.inviteActive(boardId, existing.getId(), req.role()));
-            return MembershipResponse.from(m, existing);
+            return announce(MembershipResponse.from(m, existing), callerId, BoardEventType.MEMBER_ADDED);
         }
 
         if (memberships.findByBoardIdAndInvitedEmailAndStatus(boardId, email, MembershipStatus.PENDING)
@@ -80,7 +84,7 @@ public class MembershipService {
             throw new ConflictException("An invite for this email is already pending");
         }
         BoardMembership m = memberships.save(BoardMembership.invitePending(boardId, email, req.role()));
-        return MembershipResponse.from(m, null);
+        return announce(MembershipResponse.from(m, null), callerId, BoardEventType.MEMBER_ADDED);
     }
 
     /**
@@ -115,17 +119,36 @@ public class MembershipService {
         m.changeRole(req.role());
         BoardMembership saved = memberships.save(m);
         User user = saved.getUserId() != null ? users.findById(saved.getUserId()).orElse(null) : null;
-        return MembershipResponse.from(saved, user);
+        return announce(MembershipResponse.from(saved, user), callerId, BoardEventType.MEMBER_UPDATED);
     }
 
-    /** Remove a member or revoke a pending invite (owner only; the OWNER row stays). */
+    /**
+     * Remove a member or revoke a pending invite (owner only; the OWNER row stays).
+     *
+     * <p>The removed member is very likely subscribed to this board's topic right now, so the
+     * MEMBER_REMOVED broadcast carries the whole membership rather than a bare id: it's how
+     * they learn — from the {@code userId} — that the person just removed was them, and can
+     * leave the board instead of sitting on a view they can no longer refresh.
+     */
     @Transactional
     public void remove(UUID membershipId, UUID callerId) {
         BoardMembership m = requireMembershipOnOwnedBoard(membershipId, callerId);
         if (m.getRole() == Role.OWNER) {
             throw new IllegalArgumentException("The owner cannot be removed from their board");
         }
+        // Read the user before the delete, while the row is still there to describe.
+        User user = m.getUserId() != null ? users.findById(m.getUserId()).orElse(null) : null;
         memberships.delete(m);
+        announce(MembershipResponse.from(m, user), callerId, BoardEventType.MEMBER_REMOVED);
+    }
+
+    /**
+     * Tell the board that its roster changed, and hand the response straight back — so a caller
+     * can announce and return in one line without losing sight of what it returns.
+     */
+    private MembershipResponse announce(MembershipResponse membership, UUID actorId, BoardEventType type) {
+        events.publishEvent(new BoardChangedEvent(membership.boardId(), actorId, type, membership));
+        return membership;
     }
 
     /**

@@ -3,9 +3,13 @@ package org.cj.server.board.service;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.cj.server.board.dto.BoardEventType;
+import org.cj.server.board.dto.CardResponse;
+import org.cj.server.board.dto.DeletedRef;
 import org.cj.server.board.dto.MoveCardRequest;
 import org.cj.server.board.entity.BoardColumn;
 import org.cj.server.board.entity.Card;
@@ -24,6 +28,9 @@ import org.cj.server.common.ranking.RankExhaustedException;
  * <p>Two M2 specifics: new cards are <b>appended</b> within their column via {@link LexoRank},
  * and a card's denormalized {@code boardId} is set from its column at creation — so the
  * board-scoped aggregate read (M2.6) can find every card without joining through columns.
+ *
+ * <p>Since M5 every mutation also announces itself with a {@link BoardChangedEvent}, which the
+ * real-time layer broadcasts to the board's subscribers once the transaction commits.
  */
 @Service
 public class CardService {
@@ -31,11 +38,14 @@ public class CardService {
     private final CardRepository cards;
     private final BoardColumnRepository columns;
     private final BoardService boardService;
+    private final ApplicationEventPublisher events;
 
-    public CardService(CardRepository cards, BoardColumnRepository columns, BoardService boardService) {
+    public CardService(CardRepository cards, BoardColumnRepository columns, BoardService boardService,
+                       ApplicationEventPublisher events) {
         this.cards = cards;
         this.columns = columns;
         this.boardService = boardService;
+        this.events = events;
     }
 
     /** Append a card to the end of a column on a board the caller can edit. */
@@ -50,20 +60,26 @@ public class CardService {
                 .orElse(null);
         String rank = LexoRank.between(lastRank, null);
         // boardId is taken from the column — keeping the denormalized copy correct by construction.
-        return cards.save(Card.create(columnId, column.getBoardId(), title, description, rank));
+        Card saved = cards.save(Card.create(columnId, column.getBoardId(), title, description, rank));
+        announce(saved, userId, BoardEventType.CARD_CREATED);
+        return saved;
     }
 
     @Transactional
     public Card update(UUID cardId, UUID userId, String title, String description) {
         Card card = requireCardOnBoard(cardId, userId, Role.EDITOR);
         card.edit(title, description);
-        return cards.save(card);
+        Card saved = cards.save(card);
+        announce(saved, userId, BoardEventType.CARD_UPDATED);
+        return saved;
     }
 
     @Transactional
     public void delete(UUID cardId, UUID userId) {
         Card card = requireCardOnBoard(cardId, userId, Role.EDITOR);
         cards.delete(card);
+        events.publishEvent(new BoardChangedEvent(
+                card.getBoardId(), userId, BoardEventType.CARD_DELETED, new DeletedRef(card.getId())));
     }
 
     /**
@@ -106,7 +122,20 @@ public class CardService {
         }
 
         card.moveTo(target.getId(), rank);
-        return cards.save(card);
+        Card saved = cards.save(card);
+        // Only the moved card is announced, even when the re-balance above rewrote every
+        // sibling's rank. Subscribers holding the old ranks still sort into the same order —
+        // spread() re-spaces without reordering — and they never compute placements locally
+        // anyway: a move is intent the server resolves. Broadcasting the re-space would be
+        // churn nobody reads.
+        announce(saved, userId, BoardEventType.CARD_MOVED);
+        return saved;
+    }
+
+    /** Tell the board that a card changed; the real-time layer relays it after commit. */
+    private void announce(Card card, UUID actorId, BoardEventType type) {
+        events.publishEvent(new BoardChangedEvent(
+                card.getBoardId(), actorId, type, CardResponse.from(card)));
     }
 
     /** The rank bounds a move must land between; either side may be null (open end). */
