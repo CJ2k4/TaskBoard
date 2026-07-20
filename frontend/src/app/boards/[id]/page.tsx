@@ -48,6 +48,8 @@ import { CardModal } from "@/components/board/card-modal";
 import { CardFace } from "@/components/board/sortable-card";
 import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
 import { RoleBadge, ShareModal } from "@/components/board/share-modal";
+import { applyBoardEvent, type BoardEvent } from "@/lib/board-events";
+import { useBoardEvents, type ConnectionState } from "@/lib/realtime";
 
 // --- pure helpers over the nested board (used by the drag handlers) ---
 
@@ -118,7 +120,7 @@ export default function BoardPage() {
 }
 
 function BoardContent() {
-  const { authFetch } = useAuth();
+  const { authFetch, user } = useAuth();
   const router = useRouter();
   const { id } = useParams<{ id: string }>();
 
@@ -129,6 +131,10 @@ function BoardContent() {
   // The card currently open in the modal, or null. Held by id-carrying object so edits
   // reflect immediately when we refresh it from state.
   const [openCard, setOpenCard] = useState<Card | null>(null);
+  // Someone else touched the open card while we had it open. We never overwrite the modal's
+  // fields (that's the user's draft) — just flag it, so the modal can warn before a save clobbers
+  // their change ("edited" here) or tell us the card is gone ("deleted").
+  const [openCardConflict, setOpenCardConflict] = useState<"edited" | "deleted" | null>(null);
   const [sharing, setSharing] = useState(false);
 
   // Permissions, derived once from the role the server sent with the board and then threaded
@@ -150,6 +156,36 @@ function BoardContent() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // --- real-time: apply other people's changes as they happen (M5) ---
+
+  function handleBoardEvent(event: BoardEvent) {
+    // Our own change, echoed back. We already applied it optimistically and reconciled to the
+    // server's rank; re-applying would fight an in-flight drag. (The server broadcasts to the
+    // actor too, precisely so we can recognize and skip it here.)
+    if (event.actorId === user?.id) return;
+
+    // If the change touches the card we have open, flag it — but never rewrite the fields the
+    // user is editing. A delete wins over a prior edit flag: the card is simply gone.
+    if (openCard) {
+      const payloadId = (event.payload as { id?: string })?.id;
+      if (payloadId === openCard.id) {
+        if (event.type === "CARD_DELETED") setOpenCardConflict("deleted");
+        else if (event.type === "CARD_UPDATED" || event.type === "CARD_MOVED") {
+          setOpenCardConflict((prev) => (prev === "deleted" ? prev : "edited"));
+        }
+      }
+    }
+
+    setBoard((prev) => (prev === null ? prev : applyBoardEvent(prev, event)));
+  }
+
+  const connection: ConnectionState = useBoardEvents({
+    boardId: id,
+    enabled: status === "ready",
+    onEvent: handleBoardEvent,
+    onResync: load,
+  });
 
   // --- local state helpers (keep the nested board in sync with server responses) ---
 
@@ -218,7 +254,18 @@ function BoardContent() {
     replaceColumnCards(openCard.columnId, (cards) =>
       cards.filter((c) => c.id !== openCard.id),
     );
+    closeCard();
+  }
+
+  /** Open a card in the modal, starting from a clean (no-conflict) slate. */
+  function openCardModal(card: Card) {
+    setOpenCardConflict(null);
+    setOpenCard(card);
+  }
+
+  function closeCard() {
     setOpenCard(null);
+    setOpenCardConflict(null);
   }
 
   // --- drag-and-drop (cards and columns) ---
@@ -431,6 +478,7 @@ function BoardContent() {
           )}
           {/* Owning is the unremarkable case — only a shared-in role is worth labelling. */}
           {!isOwner && <RoleBadge role={board.myRole} />}
+          <ConnectionDot state={connection} />
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -479,7 +527,7 @@ function BoardContent() {
                 onRename={(title) => handleRenameColumn(column.id, title)}
                 onDelete={() => handleDeleteColumn(column.id)}
                 onCreateCard={(title) => handleAddCard(column.id, title)}
-                onCardClick={setOpenCard}
+                onCardClick={openCardModal}
               />
             ))}
             {canEdit && <AddColumn onAdd={handleAddColumn} />}
@@ -501,7 +549,8 @@ function BoardContent() {
         <CardModal
           card={openCard}
           canEdit={canEdit}
-          onClose={() => setOpenCard(null)}
+          conflict={openCardConflict}
+          onClose={closeCard}
           onSave={handleSaveCard}
           onDelete={handleDeleteCard}
         />
@@ -611,5 +660,27 @@ function CenteredNote({ children }: { children: React.ReactNode }) {
     <main className="flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
       <p className="text-sm text-zinc-500 dark:text-zinc-400">{children}</p>
     </main>
+  );
+}
+
+/**
+ * A quiet live-connection indicator. It answers one question — "is what I'm looking at current?"
+ * — so when the socket drops, the user knows the board may be going stale rather than assuming
+ * nothing's happening.
+ */
+function ConnectionDot({ state }: { state: ConnectionState }) {
+  const live = state === "live";
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400"
+      title={live ? "Live — updates appear as they happen" : "Reconnecting…"}
+    >
+      <span
+        className={`h-2 w-2 rounded-full ${
+          live ? "bg-emerald-500" : "animate-pulse bg-amber-500"
+        }`}
+      />
+      {live ? "Live" : "Reconnecting…"}
+    </span>
   );
 }

@@ -2183,14 +2183,94 @@ cd server
 
 ---
 
+### Step 5.x — Live board updates in the browser (Pass A) · _2026-07-20_
+
+**Goal:** the payoff. Two people on one board see each other's cards and columns move in real
+time, no reload. This pass does the transport plus the events that change the canvas
+(`CARD_*`, `COLUMN_*`); the board/member events are Pass B.
+
+**Files:**
+
+- `lib/realtime.ts` (new — the `useBoardEvents` socket hook)
+- `lib/board-events.ts` (new — the pure `applyBoardEvent` reducer + wire types)
+- `app/boards/[id]/page.tsx` (wire the hook, echo-skip, connection dot, open-card conflict)
+- `components/board/card-modal.tsx` (the "changed elsewhere" notice)
+
+> **Concepts:** STOMP over WebSocket · auth on CONNECT vs the handshake · a one-way feed ·
+> pure reducer over event stream · echo suppression via `actorId` · rank-not-arrival ordering ·
+> refetch-on-reconnect · the `useEffect` closure-in-deps trap
+
+**Why auth rides the CONNECT frame, not the URL.** The browser `WebSocket` API gives you no way
+to set headers on the HTTP upgrade — so the handshake is necessarily anonymous (the backend
+permits `/ws/**`) and identity is proved one frame later, on STOMP CONNECT, via an
+`Authorization: Bearer` native header. The hook reads the token in `beforeConnect` *every*
+(re)connect rather than closing over it, so a token refreshed mid-session is picked up for free.
+
+**The client never SENDs.** There's no `/app` prefix server-side and none here: every write
+still goes through the authenticated REST API, and the socket is a pure one-way feed out. That's
+a security property, not a limitation — the write path can't be reached over the socket, so it
+can't dodge the REST guards.
+
+**A hook owns the socket; a pure function owns the state.** `useBoardEvents` deals only with
+connect/auth/reconnect/teardown. `applyBoardEvent(board, event)` is a plain
+`BoardDetail → BoardDetail` with no React in it — the part worth reasoning about carefully lives
+where it can be read (and later unit-tested) in isolation. One nice consequence: `CARD_CREATED`,
+`CARD_UPDATED`, and `CARD_MOVED` are *one* code path — pull the card out of wherever it is,
+insert it into the column its own `columnId` names, re-sort. A move is just an update whose
+column changed.
+
+**Order comes from `rank`, never arrival order.** Every insert appends then sorts by the
+server's LexoRank string, exactly as the REST path has since M3. Two events can arrive in any
+order and still settle into the same board.
+
+**Skip your own echo.** The server broadcasts to the actor too — on purpose. We already applied
+our own change optimistically and reconciled to the server's rank, so re-applying the echo would
+fight an in-flight drag. `event.actorId === user.id` → ignore. (Verified: dragging a card
+in-browser lands it once, no flicker, while the echo sails past unhandled.)
+
+**Reconnect refetches the whole board.** The simple broker has no replay, so anything that
+happened while the socket was down is gone. Pretending otherwise would leave a subtly-wrong
+board; the honest fix is to reload. The hook tells a *re*-connect from the first connect with a
+flag and calls the page's existing `load()` — the same function the initial render already uses.
+
+**The trap I was watching for, and it's real.** `onEvent`/`onResync` are fresh closures every
+render. If they go in the socket effect's dependency array, the socket tears down and rebuilds
+on *every keystroke* in a card composer — works in a ten-second demo, falls apart the moment
+someone types. The fix is to hold them in refs updated by a separate effect and depend only on
+`boardId`/`enabled`. Confirmed by typing into a composer with the connection indicator watched:
+it stayed "Live" throughout, no reconnect churn.
+
+**Someone edits the card you have open.** We never touch the modal's fields — that's the user's
+draft. Instead a flag drives an amber notice ("Saving will overwrite their version" for an edit;
+"no longer exists" for a delete, with Save hidden). This is the last-write-wins policy
+`project-scope.md` already commits to, just made visible instead of silent. Verified live: with a
+half-typed description open, the other user's edit raised the notice, the draft stayed intact,
+and the card *behind* the modal updated.
+
+**How we verified** (two accounts, one browser + curl for the other user): a card created,
+renamed, moved across columns, and deleted by the other user each appeared without a reload; a
+column reorder rearranged live; echo-suppression kept an own-drag clean; the open-modal notice
+fired without eating the draft; a fresh load connects straight to "Live". The one thing I could
+*not* capture visually was the amber "Reconnecting…" state and the resync — in this environment
+the browser tab is torn down whenever the backend process is killed, so I couldn't watch the
+drop-and-recover. The logic is small (`onWebSocketClose → offline`, stompjs auto-reconnect,
+`onConnect`-when-already-connected → resync) and the connect path is proven, but the reconnect
+visual is unverified and worth a manual check.
+
+```bash
+cd frontend
+npm run build   # clean
+```
+
 ### Where M5 stands
 
 Backend: ✅ STOMP endpoint with JWT-authenticated CONNECT · ✅ membership-checked SUBSCRIBE ·
 ✅ every card/column/board/member mutation broadcast after commit · 105 tests.
 
-Frontend: ⬜ not started — STOMP client, subscribe on board open, apply incoming events to local
-state (skipping your own echo via `actorId`), unsubscribe on leave, refetch the whole board on
-reconnect.
+Frontend: ✅ **(Pass A)** STOMP client, subscribe on board open, `CARD_*`/`COLUMN_*` applied live
+in rank order, own-echo skipped via `actorId`, connection indicator, refetch-on-reconnect,
+open-card conflict notice. ⬜ **(Pass B)** `BOARD_UPDATED`/`BOARD_DELETED` and `MEMBER_*` — live
+role change, mid-session eviction, roster refresh.
 
 ---
 

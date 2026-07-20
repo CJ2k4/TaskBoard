@@ -17,16 +17,23 @@ import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
  *
  * A viewer (`canEdit` false) still opens cards — reading a description is the whole point of
  * having read access — but the fields are `readOnly` and Save/Delete are gone, leaving Close.
+ *
+ * `conflict` reflects a live change to this same card by someone else while it's open (M5). We
+ * never overwrite the fields — that would eat the user's draft — so instead we warn: "edited"
+ * means saving will overwrite their version (the last-write-wins policy, made visible), and
+ * "deleted" means the card is already gone, so there's nothing left to save.
  */
 export function CardModal({
   card,
   canEdit,
+  conflict = null,
   onClose,
   onSave,
   onDelete,
 }: {
   card: Card;
   canEdit: boolean;
+  conflict?: "edited" | "deleted" | null;
   onClose: () => void;
   onSave: (title: string, description: string | null) => Promise<void>;
   onDelete: () => Promise<void>;
@@ -71,6 +78,17 @@ export function CardModal({
         className="w-full max-w-lg rounded-xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-800 dark:bg-zinc-950"
         onClick={(e) => e.stopPropagation()}
       >
+        {conflict && (
+          <p
+            className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+            role="alert"
+          >
+            {conflict === "deleted"
+              ? "Someone else deleted this card. Your changes can no longer be saved."
+              : "Someone else changed this card. Saving will overwrite their version."}
+          </p>
+        )}
+
         <label className="flex flex-col gap-1">
           <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Title</span>
           <input
@@ -103,11 +121,14 @@ export function CardModal({
         )}
 
         <div className="mt-6 flex items-center justify-between">
-          {canEdit ? (
+          {/* A card deleted out from under us can't be deleted or saved — only closed. */}
+          {canEdit && conflict !== "deleted" ? (
             <InlineConfirmButton onConfirm={onDelete} label="Delete card" />
           ) : (
             <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              You have view-only access to this board.
+              {conflict === "deleted"
+                ? "This card no longer exists."
+                : "You have view-only access to this board."}
             </span>
           )}
           <div className="flex items-center gap-2">
@@ -117,9 +138,9 @@ export function CardModal({
               disabled={saving}
               className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
             >
-              {canEdit ? "Cancel" : "Close"}
+              {canEdit && conflict !== "deleted" ? "Cancel" : "Close"}
             </button>
-            {canEdit && (
+            {canEdit && conflict !== "deleted" && (
               <button
                 type="button"
                 onClick={save}
