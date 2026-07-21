@@ -8,10 +8,14 @@ import { useAuth } from "@/lib/auth-context";
 import type { Role } from "@/lib/boards";
 import {
   changeMemberRole,
+  createInviteLink,
+  disableInviteLink,
+  getInviteLink,
   inviteMember,
   listMembers,
   removeMember,
   type InvitableRole,
+  type InviteLink,
   type Membership,
 } from "@/lib/members";
 import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
@@ -111,6 +115,8 @@ export function ShareModal({
         </div>
 
         {isOwner && <InviteForm boardId={boardId} onInvited={handleInvited} />}
+
+        {isOwner && <InviteLinkSection boardId={boardId} />}
 
         {status === "loading" && (
           <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading members…</p>
@@ -223,6 +229,142 @@ function InviteForm({
       )}
       {note && <p className="text-xs text-zinc-500 dark:text-zinc-400">{note}</p>}
     </form>
+  );
+}
+
+/**
+ * The "share a link" half of sharing (M6), owner-only. A single rotatable link that anyone
+ * signed-in can redeem to join at a preset role — the low-friction counterpart to inviting a
+ * specific email. Rotating mints a new token (killing the old URL); disabling removes it.
+ */
+function InviteLinkSection({ boardId }: { boardId: string }) {
+  const { authFetch } = useAuth();
+  const [link, setLink] = useState<InviteLink | null>(null);
+  const [role, setRole] = useState<InvitableRole>("EDITOR");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load any existing link on open. A failure here is non-fatal — the create form still works.
+  useEffect(() => {
+    getInviteLink(authFetch, boardId)
+      .then(setLink)
+      .catch(() => setLink({ token: null, role: null }));
+  }, [authFetch, boardId]);
+
+  const url =
+    link?.token && typeof window !== "undefined"
+      ? `${window.location.origin}/join/${link.token}`
+      : null;
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    try {
+      setLink(await createInviteLink(authFetch, boardId, role));
+      setCopied(false);
+    } catch {
+      setError("Couldn't create a link.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable() {
+    setBusy(true);
+    setError(null);
+    try {
+      await disableInviteLink(authFetch, boardId);
+      setLink({ token: null, role: null });
+    } catch {
+      setError("Couldn't disable the link.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy() {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      setError("Couldn't copy — copy it manually.");
+    }
+  }
+
+  return (
+    <div className="mb-5 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+      <p className="mb-2 text-xs font-medium text-zinc-700 dark:text-zinc-300">
+        Or share a link
+      </p>
+
+      {url ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <input
+              readOnly
+              value={url}
+              onFocus={(e) => e.target.select()}
+              className="flex-1 rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 text-xs text-zinc-700 outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+            />
+            <button
+              type="button"
+              onClick={copy}
+              className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Anyone who signs in with this link joins as{" "}
+            <span className="font-medium">{(link!.role ?? "").toLowerCase()}</span>.{" "}
+            <button
+              type="button"
+              onClick={create}
+              disabled={busy}
+              className="underline disabled:opacity-50"
+            >
+              Rotate
+            </button>{" "}
+            ·{" "}
+            <button
+              type="button"
+              onClick={disable}
+              disabled={busy}
+              className="underline disabled:opacity-50"
+            >
+              Disable link
+            </button>
+          </p>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value as InvitableRole)}
+            className="rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            aria-label="Link role"
+          >
+            <option value="EDITOR">Editor</option>
+            <option value="VIEWER">Viewer</option>
+          </select>
+          <button
+            type="button"
+            onClick={create}
+            disabled={busy}
+            className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+          >
+            {busy ? "Creating…" : "Create link"}
+          </button>
+        </div>
+      )}
+      {error && (
+        <p className="mt-1 text-xs text-red-600 dark:text-red-400" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

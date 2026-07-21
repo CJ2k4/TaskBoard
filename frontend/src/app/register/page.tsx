@@ -1,15 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { safeNext, withNext } from "@/lib/next-url";
 
+// useSearchParams forces a client-side bailout, which Next requires under a Suspense boundary.
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={<AuthShell />}>
+      <RegisterForm />
+    </Suspense>
+  );
+}
+
+function RegisterForm() {
   const { status, register } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // A fresh sign-up via an invite link should land on that board, not the empty dashboard.
+  const nextParam = searchParams.get("next");
+  const redirectTo = safeNext(nextParam);
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -22,9 +36,9 @@ export default function RegisterPage() {
 
   useEffect(() => {
     if (status === "authenticated") {
-      router.replace("/dashboard");
+      router.replace(redirectTo);
     }
-  }, [status, router]);
+  }, [status, router, redirectTo]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -33,7 +47,7 @@ export default function RegisterPage() {
     setSubmitting(true);
     try {
       await register(name, email, password);
-      router.replace("/dashboard");
+      router.replace(redirectTo);
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.fieldErrors.length > 0) {
@@ -106,13 +120,22 @@ export default function RegisterPage() {
         <p className="mt-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
           Already have an account?{" "}
           <Link
-            href="/login"
+            href={withNext("/login", nextParam)}
             className="font-medium text-zinc-900 underline underline-offset-2 dark:text-zinc-100"
           >
             Log in
           </Link>
         </p>
       </div>
+    </main>
+  );
+}
+
+/** The page frame shown while the client-side form (which reads the URL) hydrates. */
+function AuthShell() {
+  return (
+    <main className="flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
+      <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
     </main>
   );
 }

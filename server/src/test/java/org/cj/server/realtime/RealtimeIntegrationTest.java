@@ -8,6 +8,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.lang.reflect.Type;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -186,17 +188,61 @@ class RealtimeIntegrationTest {
         return received;
     }
 
-    /** The next event, or a failure if the board stayed silent. */
+    /**
+     * The next <em>domain</em> event, skipping PRESENCE frames. Presence (M6) is broadcast on the
+     * same topic whenever someone subscribes or leaves, so a test watching for card/column/member
+     * changes must look past it — the assertion is about what a mutation announces, not about who
+     * happens to be viewing.
+     */
     private JsonNode nextEvent(BlockingQueue<JsonNode> queue) throws Exception {
-        JsonNode event = queue.poll(EXPECT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        assertThat(event).as("expected a board event but the topic stayed silent").isNotNull();
-        return event;
+        long deadline = System.currentTimeMillis() + EXPECT_TIMEOUT_MS;
+        for (;;) {
+            long remaining = deadline - System.currentTimeMillis();
+            JsonNode event = remaining > 0 ? queue.poll(remaining, TimeUnit.MILLISECONDS) : null;
+            assertThat(event).as("expected a board event but the topic stayed silent").isNotNull();
+            if (!isPresence(event)) {
+                return event;
+            }
+        }
     }
 
+    /** The next PRESENCE event, skipping any domain frames. */
+    private JsonNode nextPresence(BlockingQueue<JsonNode> queue) throws Exception {
+        long deadline = System.currentTimeMillis() + EXPECT_TIMEOUT_MS;
+        for (;;) {
+            long remaining = deadline - System.currentTimeMillis();
+            JsonNode event = remaining > 0 ? queue.poll(remaining, TimeUnit.MILLISECONDS) : null;
+            assertThat(event).as("expected a PRESENCE event but the topic stayed silent").isNotNull();
+            if (isPresence(event)) {
+                return event;
+            }
+        }
+    }
+
+    /** No <em>domain</em> event may arrive; PRESENCE noise is ignored. */
     private void assertSilent(BlockingQueue<JsonNode> queue) throws Exception {
-        assertThat(queue.poll(SILENCE_TIMEOUT_MS, TimeUnit.MILLISECONDS))
-                .as("expected no event to arrive")
-                .isNull();
+        long deadline = System.currentTimeMillis() + SILENCE_TIMEOUT_MS;
+        for (;;) {
+            long remaining = deadline - System.currentTimeMillis();
+            JsonNode event = remaining > 0 ? queue.poll(remaining, TimeUnit.MILLISECONDS) : null;
+            if (event == null) {
+                return; // stayed silent of domain events for the whole window
+            }
+            assertThat(event.get("type").asText())
+                    .as("expected no domain event to arrive")
+                    .isEqualTo("PRESENCE");
+        }
+    }
+
+    private boolean isPresence(JsonNode event) {
+        return event.get("type").asText().equals("PRESENCE");
+    }
+
+    /** The user ids in a PRESENCE event's payload. */
+    private List<String> viewerIds(JsonNode presence) {
+        List<String> ids = new ArrayList<>();
+        presence.get("payload").forEach(v -> ids.add(v.get("userId").asText()));
+        return ids;
     }
 
     // ---------------------------------------------------------------- delivery
@@ -340,6 +386,35 @@ class RealtimeIntegrationTest {
         assertSilent(events);
 
         session.disconnect();
+    }
+
+    // ---------------------------------------------------------------- presence (M6)
+
+    @Test
+    void viewersSeeEachOtherComeAndGo() throws Exception {
+        TestUser owner = newUser();
+        TestUser editor = newUser();
+        String boardId = createBoard(owner, "Live");
+        invite(owner, boardId, editor, "EDITOR");
+
+        // The owner opens the board first: presence lists them alone.
+        StompSession ownerSession = connect(owner);
+        BlockingQueue<JsonNode> ownerEvents = subscribe(ownerSession, boardId);
+        assertThat(viewerIds(nextPresence(ownerEvents))).containsExactly(owner.id());
+
+        // The editor opens it too: both sockets learn the two-viewer set.
+        StompSession editorSession = connect(editor);
+        BlockingQueue<JsonNode> editorEvents = subscribe(editorSession, boardId);
+        assertThat(viewerIds(nextPresence(ownerEvents)))
+                .containsExactlyInAnyOrder(owner.id(), editor.id());
+        assertThat(viewerIds(nextPresence(editorEvents)))
+                .containsExactlyInAnyOrder(owner.id(), editor.id());
+
+        // The editor closes the board: the owner sees them drop out.
+        editorSession.disconnect();
+        assertThat(viewerIds(nextPresence(ownerEvents))).containsExactly(owner.id());
+
+        ownerSession.disconnect();
     }
 
     // ---------------------------------------------------------------- refusal

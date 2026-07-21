@@ -16,12 +16,16 @@ import org.cj.server.auth.entity.User;
 import org.cj.server.auth.repository.UserRepository;
 import org.cj.server.board.dto.BoardEventType;
 import org.cj.server.board.dto.CreateInviteRequest;
+import org.cj.server.board.dto.InviteLinkResponse;
+import org.cj.server.board.dto.JoinResult;
 import org.cj.server.board.dto.MembershipResponse;
 import org.cj.server.board.dto.UpdateMembershipRequest;
+import org.cj.server.board.entity.Board;
 import org.cj.server.board.entity.BoardMembership;
 import org.cj.server.board.entity.MembershipStatus;
 import org.cj.server.board.entity.Role;
 import org.cj.server.board.repository.BoardMembershipRepository;
+import org.cj.server.board.repository.BoardRepository;
 import org.cj.server.common.exception.ConflictException;
 import org.cj.server.common.exception.NotFoundException;
 
@@ -37,13 +41,16 @@ import org.cj.server.common.exception.NotFoundException;
 public class MembershipService {
 
     private final BoardMembershipRepository memberships;
+    private final BoardRepository boards;
     private final UserRepository users;
     private final BoardService boardService;
     private final ApplicationEventPublisher events;
 
-    public MembershipService(BoardMembershipRepository memberships, UserRepository users,
-                             BoardService boardService, ApplicationEventPublisher events) {
+    public MembershipService(BoardMembershipRepository memberships, BoardRepository boards,
+                             UserRepository users, BoardService boardService,
+                             ApplicationEventPublisher events) {
         this.memberships = memberships;
+        this.boards = boards;
         this.users = users;
         this.boardService = boardService;
         this.events = events;
@@ -140,6 +147,66 @@ public class MembershipService {
         User user = m.getUserId() != null ? users.findById(m.getUserId()).orElse(null) : null;
         memberships.delete(m);
         announce(MembershipResponse.from(m, user), callerId, BoardEventType.MEMBER_REMOVED);
+    }
+
+    // ---------------------------------------------------------------- invite links (M6)
+
+    /**
+     * Issue or rotate the board's shareable invite link (owner only). Each call mints a fresh
+     * token, so re-generating a link silently invalidates any URL already handed out. {@code role}
+     * must be EDITOR or VIEWER — the same rule as {@link #invite}, and for the same reason: a
+     * public link that could grant OWNER would be a way to mint a second owner.
+     */
+    @Transactional
+    public InviteLinkResponse createOrRotateLink(UUID boardId, UUID callerId, Role role) {
+        Board board = boardService.requireBoardAccess(boardId, callerId, Role.OWNER);
+        if (role == Role.OWNER) {
+            throw new IllegalArgumentException("An invite link cannot grant OWNER");
+        }
+        board.setInviteLink(role);
+        return InviteLinkResponse.from(boards.save(board));
+    }
+
+    /** The board's current link, or a null-token response if none is active (owner only). */
+    @Transactional(readOnly = true)
+    public InviteLinkResponse getLink(UUID boardId, UUID callerId) {
+        return InviteLinkResponse.from(boardService.requireBoardAccess(boardId, callerId, Role.OWNER));
+    }
+
+    /** Disable the board's link (owner only); an outstanding URL stops resolving at once. */
+    @Transactional
+    public void disableLink(UUID boardId, UUID callerId) {
+        Board board = boardService.requireBoardAccess(boardId, callerId, Role.OWNER);
+        board.clearInviteLink();
+        boards.save(board);
+    }
+
+    /**
+     * Redeem an invite link: the signed-in caller joins the board at the link's role. This is the
+     * one sharing operation that is deliberately <b>not</b> owner-scoped — being handed the link
+     * <em>is</em> the authorization, and the token is an unguessable UUID. Idempotent: a caller who
+     * is already an active member (the owner testing their own link, or someone re-opening it)
+     * joins nothing and simply gets their existing role back.
+     *
+     * @throws NotFoundException the token is unknown or the link has been disabled
+     */
+    @Transactional
+    public JoinResult acceptLink(UUID token, UUID callerId) {
+        Board board = boards.findByInviteToken(token)
+                .orElseThrow(() -> new NotFoundException("This invite link is no longer valid"));
+
+        // Already in? Add nothing, announce nothing — just report the access they already have.
+        BoardMembership existing = memberships.findByBoardIdAndUserId(board.getId(), callerId).orElse(null);
+        if (existing != null && existing.getStatus() == MembershipStatus.ACTIVE) {
+            return new JoinResult(board.getId(), existing.getRole());
+        }
+
+        Role role = board.getInviteLinkRole();
+        BoardMembership m = memberships.save(BoardMembership.inviteActive(board.getId(), callerId, role));
+        User user = users.findById(callerId).orElse(null);
+        // The board's members (and its activity log) learn a new person arrived.
+        announce(MembershipResponse.from(m, user), callerId, BoardEventType.MEMBER_ADDED);
+        return new JoinResult(board.getId(), role);
     }
 
     /**

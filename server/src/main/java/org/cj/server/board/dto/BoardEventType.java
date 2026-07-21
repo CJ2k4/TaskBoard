@@ -13,6 +13,11 @@ package org.cj.server.board.dto;
  *   <li>{@code BOARD_UPDATED} → {@link BoardSummary}, {@code BOARD_DELETED} → {@link DeletedRef}</li>
  *   <li>{@code MEMBER_*} → {@link MembershipResponse} (removal included: clients need the
  *       {@code userId} to tell whether the person shown the door was <em>them</em>)</li>
+ *   <li>{@code PRESENCE} → {@code List<}{@link org.cj.server.realtime.dto.PresenceViewer}{@code >}
+ *       — who is viewing the board right now. Unlike every other constant here it is <em>not</em>
+ *       a persisted domain change: it doesn't flow through {@code BoardChangedEvent}, carries a
+ *       {@code null actorId} (it must reach everyone, including whoever just joined/left, so no
+ *       one skips it as their own echo), and is never written to the activity log.</li>
  * </ul>
  *
  * <p>It lives in {@code dto} rather than beside the event class in {@code service} so the
@@ -34,5 +39,7 @@ public enum BoardEventType {
 
     MEMBER_ADDED,
     MEMBER_UPDATED,
-    MEMBER_REMOVED
+    MEMBER_REMOVED,
+
+    PRESENCE
 }

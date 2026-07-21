@@ -3,8 +3,6 @@ package org.cj.server.realtime.security;
 import java.security.Principal;
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
@@ -20,6 +18,7 @@ import org.cj.server.auth.security.AuthPrincipal;
 import org.cj.server.auth.service.JwtService;
 import org.cj.server.board.entity.Role;
 import org.cj.server.board.service.BoardService;
+import org.cj.server.realtime.BoardTopic;
 import org.cj.server.common.exception.ForbiddenException;
 import org.cj.server.common.exception.NotFoundException;
 
@@ -63,9 +62,6 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
     private static final String AUTH_HEADER = "Authorization";
     private static final String BEARER = "Bearer ";
-
-    /** The only destination shape this app publishes to; anything else is refused outright. */
-    private static final Pattern BOARD_TOPIC = Pattern.compile("^/topic/board/([0-9a-fA-F-]{36})$");
 
     private final JwtService jwt;
     private final BoardService boardService;
@@ -136,15 +132,8 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
         if (destination == null) {
             throw new StompSecurityException("Missing destination");
         }
-        Matcher matcher = BOARD_TOPIC.matcher(destination);
-        if (!matcher.matches()) {
-            throw new StompSecurityException("Unknown destination " + destination);
-        }
-        try {
-            return UUID.fromString(matcher.group(1));
-        } catch (IllegalArgumentException ex) {
-            throw new StompSecurityException("Unknown destination " + destination);
-        }
+        return BoardTopic.boardId(destination)
+                .orElseThrow(() -> new StompSecurityException("Unknown destination " + destination));
     }
 
     /**

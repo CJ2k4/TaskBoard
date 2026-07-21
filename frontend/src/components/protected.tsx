@@ -12,19 +12,23 @@
  */
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 import { useAuth } from "@/lib/auth-context";
+import { withNext } from "@/lib/next-url";
 
 export function Protected({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
     if (status === "unauthenticated") {
-      router.replace("/login");
+      // Remember where they were headed, so login can send them back here (e.g. a /join/{token}
+      // link opened while signed out). usePathname doesn't trigger the useSearchParams CSR bailout.
+      router.replace(withNext("/login", pathname));
     }
-  }, [status, router]);
+  }, [status, router, pathname]);
 
   if (status === "authenticated") {
     return <>{children}</>;

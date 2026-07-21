@@ -72,3 +72,40 @@ export const changeMemberRole = (
 /** Remove a member, or revoke a pending invite — the same row either way. */
 export const removeMember = (authFetch: AuthFetch, membershipId: string) =>
   authFetch<void>(`/api/memberships/${membershipId}`, { method: "DELETE" });
+
+// ---------------------------------------------------------------- invite links (M6)
+
+/**
+ * A board's shareable invite link. `token` is null when no link is active — the server answers
+ * 200 with a null token (not a 404) so the owner UI can tell "no link yet" apart from an error.
+ */
+export type InviteLink = { token: string | null; role: InvitableRole | null };
+
+/** The outcome of redeeming a link: which board the caller now has, and at what role. */
+export type JoinResult = { boardId: string; role: Role };
+
+/** The board's current link (owner only). Null token = none active yet. */
+export const getInviteLink = (authFetch: AuthFetch, boardId: string) =>
+  authFetch<InviteLink>(`/api/boards/${boardId}/invite-link`);
+
+/** Create or rotate the link (owner only). Rotating invalidates any URL already shared. */
+export const createInviteLink = (
+  authFetch: AuthFetch,
+  boardId: string,
+  role: InvitableRole,
+) =>
+  authFetch<InviteLink>(`/api/boards/${boardId}/invite-link`, {
+    method: "POST",
+    ...json({ role }),
+  });
+
+/** Disable the link (owner only); an outstanding URL stops working at once. */
+export const disableInviteLink = (authFetch: AuthFetch, boardId: string) =>
+  authFetch<void>(`/api/boards/${boardId}/invite-link`, { method: "DELETE" });
+
+/**
+ * Redeem a link: the signed-in caller joins the board it points to. Throws `ApiError` 404 when
+ * the token is unknown or the link has been disabled.
+ */
+export const acceptInviteLink = (authFetch: AuthFetch, token: string) =>
+  authFetch<JoinResult>(`/api/invite-links/${token}/accept`, { method: "POST" });
