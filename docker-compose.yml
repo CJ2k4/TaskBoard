@@ -21,8 +21,10 @@ services:
     image: dpage/pgadmin4:latest
     container_name: taskboard-pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@taskboard.local
-      PGADMIN_DEFAULT_PASSWORD: admin
+      # NB: pgAdmin4's email validator rejects the reserved ".local" TLD (container Exits 1 on
+      # boot), so use a normal TLD here. Password must be at least 6 chars.
+      PGADMIN_DEFAULT_EMAIL: admin@taskboard.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
     ports:
       - "5050:80"
     depends_on:
