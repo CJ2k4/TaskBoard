@@ -26,7 +26,8 @@ export type BoardEventType =
   | "BOARD_DELETED"
   | "MEMBER_ADDED"
   | "MEMBER_UPDATED"
-  | "MEMBER_REMOVED";
+  | "MEMBER_REMOVED"
+  | "PRESENCE";
 
 /** The payload of any `*_DELETED` event: just the id of the thing that's now gone. */
 export type DeletedRef = { id: string };
@@ -42,6 +43,13 @@ export type BoardSummary = {
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * The payload of a `PRESENCE` event, mirroring the server's `PresenceViewer`: one entry per
+ * person with the board open right now. Presence isn't board data — `applyBoardEvent` ignores it
+ * (see below) and the board page keeps it in its own state — so it never enters `BoardDetail`.
+ */
+export type PresenceViewer = { userId: string; name: string };
 
 /** One message off `/topic/board/{boardId}`, mirroring the server's `BoardEvent`. */
 export type BoardEvent = {
@@ -140,9 +148,10 @@ export function applyBoardEvent(board: BoardDetail, event: BoardEvent): BoardDet
       return { ...board, name: summary.name, updatedAt: summary.updatedAt };
     }
     default:
-      // BOARD_DELETED and MEMBER_* are identity- or navigation-dependent, so the board page
-      // handles them where `user`/router/modal state live. No-op here keeps them (and any
-      // unknown type) harmless in the pure reducer.
+      // BOARD_DELETED and MEMBER_* are identity- or navigation-dependent, and PRESENCE is live
+      // socket state, not board data — the board page handles all of them where `user`/router/
+      // presence state live. No-op here keeps them (and any unknown type) harmless in the pure
+      // reducer.
       return board;
   }
 }

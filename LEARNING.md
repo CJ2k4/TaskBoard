@@ -2342,6 +2342,129 @@ watching, live.
 
 ---
 
+## Milestone 6 — Stretch features
+
+With the planned scope done, M6 is the polish list from `implementation-plan.md`: presence, an
+activity log, and a copy-able invite link. (The fourth item — optimistic updates with rollback —
+was already true from M3/M5.) Each is a full slice, and each leans on infrastructure M5 already
+built rather than adding new plumbing.
+
+### Step 6.1 — Presence: who's viewing, derived from the socket itself · _2026-07-21_
+
+The goal: little avatars of everyone with the board open, updating as people come and go. The
+temptation is to have each client *send* "I'm here" pings — but the M5 socket is deliberately a
+**one-way feed** (no `/app` prefix; the client never SENDs), and that invariant is worth keeping.
+
+The insight is that we don't need pings. Spring already publishes `SessionSubscribeEvent`,
+`SessionUnsubscribeEvent`, and `SessionDisconnectEvent` for every STOMP session, and each carries
+the `Principal` the CONNECT interceptor attached. So **subscribing to a board is the "I'm here"
+signal** — presence falls out of the lifecycle for free. `PresenceTracker` listens for those three
+events and keeps a per-board `userId → open-tab count`:
+
+- **Count, don't flag.** One person with two tabs is present once; closing one tab must not evict
+  them. A user drops out of the set only when their last tab's subscription goes.
+- **A disconnect only gives you a session id** — no destination, no board. So every subscription is
+  filed under `sessionId + subscriptionId`, letting an unsubscribe undo exactly one and a
+  disconnect undo all of that session's at once.
+
+Any real change to a board's viewer set re-broadcasts the whole list on the **same**
+`/topic/board/{id}` — a new `PRESENCE` `BoardEvent` with a **null `actorId`**. Two subtleties made
+that work:
+
+1. **Null actor, handled first.** The board page skips echoes of its own actions
+   (`actorId === user.id`); presence must reach *everyone including whoever just joined*, so the
+   client branches on `PRESENCE` *before* the echo-skip, and a null actor never matches anyone.
+2. **The existing tests had to learn to ignore it.** Presence now lands on the topic whenever
+   anyone subscribes, so the M5 delivery tests (which assert "the next event is `CARD_CREATED`")
+   grew a `nextEvent` helper that skips `PRESENCE` frames, and `assertSilent` that tolerates them.
+   A good reminder that adding a message type to a shared channel is a change to every reader.
+
+One refactor paid for itself: the topic string `/topic/board/{id}` was now built or parsed in three
+places (the SUBSCRIBE guard, the broadcaster, the tracker). A drift between them would be a *security*
+bug — the guard authorizing one destination while events fan out on another — so it moved into one
+`BoardTopic` helper.
+
+### Step 6.2 — Activity log: append-only history, written BEFORE_COMMIT · _2026-07-21_
+
+An activity feed ("Alice moved card 'X'") needs a durable record of every change. The clean way in:
+it hangs off the **same `BoardChangedEvent`** the broadcaster already publishes, so the services stay
+ignorant of it — one more listener, not edits to every mutation.
+
+The interesting decision is *when* the listener runs, and it's the **mirror image of the
+broadcaster**:
+
+- `BoardEventBroadcaster` uses `AFTER_COMMIT` — a message about a change that later rolled back
+  would be a lie on the wire.
+- `ActivityRecorder` uses **`BEFORE_COMMIT`** — the log entry must be part of the *same atomic
+  unit* as the change, committing or rolling back with it. `BEFORE_COMMIT` runs inside the still-open
+  transaction, so the `save` joins it.
+
+The recorder turns each event into a rendered predicate — `moved card "Design homepage"` — but
+stores the **actor's name nowhere**: `actor_id` is joined against `app_user` at read time, so the
+feed reflects a later rename and degrades to "Someone" if the account is deleted (`ON DELETE SET
+NULL`, so history outlives its author). `BOARD_DELETED` is skipped (the board and its cascading rows
+are on the way out); rank re-balances were never broadcast, so they stay unlogged for free.
+
+The endpoint is `GET /api/boards/{id}/activity?limit=&before=`, guarded by the same
+`requireBoardAccess(…, VIEWER)` as everything else — a non-member gets the identical 404, so the log
+leaks neither a board's existence nor its contents. On the client, an open feed refetches on a
+nonce the page bumps for any logged live event (reusing the server's rendered summaries rather than
+re-deriving a sentence from the wire event — one source of truth for "how a change reads").
+
+### Step 6.3 — Copy invite link: a token anyone signed-in can redeem · _2026-07-21_
+
+Inviting by email is precise but high-friction. A shareable link is the opposite: an owner mints one,
+hands it around, and anyone who opens it joins. The whole board graph already keys off
+`board_membership`, so the link is just a **rotatable token on the board row** (`invite_token` +
+`invite_link_role`, both null = no link) plus one un-owner-scoped endpoint.
+
+The security posture is the point:
+
+- **Holding the token is the authorization** — so `POST /api/invite-links/{token}/accept` is *not*
+  owner-gated, unlike every other sharing verb. But it's still **authenticated**: an anonymous
+  visitor is bounced to log in and comes back (below). The token is an unguessable UUID.
+- **Never OWNER.** The link role is constrained to EDITOR/VIEWER at the DB (`CHECK`), the service
+  (rejects OWNER, like `invite`), and it can't be otherwise — a public link that minted owners would
+  be a way to seize a board.
+- **Rotating mints a fresh token**, so re-generating silently kills the old URL; disabling nulls both
+  columns and an outstanding link stops resolving at once. A unique index over the nullable token
+  column is exactly right (Postgres treats NULLs as distinct, so the many linkless boards don't
+  collide).
+- **Idempotent redeem.** Already a member? Join nothing, return the role you already have — so the
+  owner testing their own link stays OWNER, and a double-click doesn't create a duplicate.
+
+The client gap this exposed: `/join/{token}` is behind `<Protected>`, which hard-redirected to
+`/login` and **dropped where you were going**. Since the link's whole job is onboarding — often a
+brand-new user — that's the flow that matters most. So `Protected` now stashes the path in
+`/login?next=…`, and login *and register* honour it (a fresh sign-up via a link lands on the board,
+not the empty dashboard). `next` is attacker-influenced, so a `safeNext` helper drops anything that
+isn't a same-origin relative path — closing the open-redirect hole. One Next.js gotcha: reading
+`useSearchParams` opts a page into a client bailout that **must** sit under a `<Suspense>` boundary,
+or the production build fails — so the login/register forms are now wrapped in one.
+
+```bash
+# Backend: real STOMP presence test + activity + invite-link integration tests
+cd server && ./mvnw test            # 118 tests, green
+
+# Frontend: type-check + production build both clean
+cd frontend && npm run build
+```
+
+### Where M6 stands
+
+Backend: ✅ presence via STOMP session events on the shared topic · ✅ append-only `board_activity`
+written BEFORE_COMMIT off the existing event · ✅ rotatable board invite-link token with an
+authenticated, idempotent redeem · **118 tests**.
+
+Frontend: ✅ live presence avatar stack · ✅ activity drawer (server-rendered summaries, live
+refresh, "load more") · ✅ copy/rotate/disable link in the Share modal + a `/join/{token}` redeem
+page, with post-login return-to across login and register.
+
+**🎉 Milestone 6 complete.** Beyond the planned scope: you can see who's here, what's happened, and
+share a board with a single link.
+
+---
+
 ## Quick command reference
 
 ```bash

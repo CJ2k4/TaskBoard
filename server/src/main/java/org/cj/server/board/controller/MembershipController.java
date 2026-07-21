@@ -16,7 +16,10 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import org.cj.server.auth.security.AuthPrincipal;
+import org.cj.server.board.dto.CreateInviteLinkRequest;
 import org.cj.server.board.dto.CreateInviteRequest;
+import org.cj.server.board.dto.InviteLinkResponse;
+import org.cj.server.board.dto.JoinResult;
 import org.cj.server.board.dto.MembershipResponse;
 import org.cj.server.board.dto.UpdateMembershipRequest;
 import org.cj.server.board.service.MembershipService;
@@ -62,5 +65,41 @@ public class MembershipController {
     public ResponseEntity<Void> remove(@PathVariable UUID id, @AuthenticationPrincipal AuthPrincipal me) {
         membershipService.remove(id, me.userId());
         return ResponseEntity.noContent().build();
+    }
+
+    // ---------------------------------------------------------------- invite links (M6)
+
+    /** Create or rotate the board's shareable link (owner only). */
+    @PostMapping("/api/boards/{boardId}/invite-link")
+    public InviteLinkResponse createInviteLink(@PathVariable UUID boardId,
+                                               @Valid @RequestBody CreateInviteLinkRequest req,
+                                               @AuthenticationPrincipal AuthPrincipal me) {
+        return membershipService.createOrRotateLink(boardId, me.userId(), req.role());
+    }
+
+    /** The board's current link, or a null-token response if none (owner only). */
+    @GetMapping("/api/boards/{boardId}/invite-link")
+    public InviteLinkResponse inviteLink(@PathVariable UUID boardId,
+                                         @AuthenticationPrincipal AuthPrincipal me) {
+        return membershipService.getLink(boardId, me.userId());
+    }
+
+    /** Disable the board's link (owner only). */
+    @DeleteMapping("/api/boards/{boardId}/invite-link")
+    public ResponseEntity<Void> disableInviteLink(@PathVariable UUID boardId,
+                                                  @AuthenticationPrincipal AuthPrincipal me) {
+        membershipService.disableLink(boardId, me.userId());
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Redeem a link: the signed-in caller joins the board it points to. Not owner-scoped — holding
+     * the token is the authorization — but still authenticated (the default security rule), so an
+     * anonymous visitor is bounced to log in first and returns here.
+     */
+    @PostMapping("/api/invite-links/{token}/accept")
+    public JoinResult acceptInviteLink(@PathVariable UUID token,
+                                       @AuthenticationPrincipal AuthPrincipal me) {
+        return membershipService.acceptLink(token, me.userId());
     }
 }

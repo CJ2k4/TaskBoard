@@ -6,6 +6,7 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import org.cj.server.board.service.BoardChangedEvent;
+import org.cj.server.realtime.BoardTopic;
 import org.cj.server.realtime.dto.BoardEvent;
 
 /**
@@ -30,9 +31,6 @@ import org.cj.server.realtime.dto.BoardEvent;
 @Component
 public class BoardEventBroadcaster {
 
-    /** Board topic pattern; the {@code {boardId}} suffix is what makes fan-out per-board. */
-    private static final String TOPIC_PREFIX = "/topic/board/";
-
     private final SimpMessagingTemplate messaging;
 
     public BoardEventBroadcaster(SimpMessagingTemplate messaging) {
@@ -41,6 +39,6 @@ public class BoardEventBroadcaster {
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onBoardChanged(BoardChangedEvent event) {
-        messaging.convertAndSend(TOPIC_PREFIX + event.boardId(), BoardEvent.from(event));
+        messaging.convertAndSend(BoardTopic.of(event.boardId()), BoardEvent.from(event));
     }
 }

@@ -2,6 +2,7 @@ package org.cj.server.board.repository;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -17,4 +18,7 @@ public interface BoardRepository extends JpaRepository<Board, UUID> {
      * than from an owner column.
      */
     List<Board> findByIdInOrderByCreatedAtDesc(Collection<UUID> ids);
+
+    /** The board a shareable invite link resolves to (M6). Empty if the token is unknown/disabled. */
+    Optional<Board> findByInviteToken(UUID inviteToken);
 }

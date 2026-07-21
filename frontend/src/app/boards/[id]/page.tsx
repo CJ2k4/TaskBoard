@@ -48,7 +48,9 @@ import { CardModal } from "@/components/board/card-modal";
 import { CardFace } from "@/components/board/sortable-card";
 import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
 import { RoleBadge, ShareModal } from "@/components/board/share-modal";
-import { applyBoardEvent, type BoardEvent } from "@/lib/board-events";
+import { PresenceStack } from "@/components/board/presence-stack";
+import { ActivityPanel } from "@/components/board/activity-panel";
+import { applyBoardEvent, type BoardEvent, type PresenceViewer } from "@/lib/board-events";
 import { useBoardEvents, type ConnectionState } from "@/lib/realtime";
 import type { Membership } from "@/lib/members";
 
@@ -137,11 +139,18 @@ function BoardContent() {
   // their change ("edited" here) or tell us the card is gone ("deleted").
   const [openCardConflict, setOpenCardConflict] = useState<"edited" | "deleted" | null>(null);
   const [sharing, setSharing] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  // Bumped on any logged live event so an open Activity panel refetches (server-rendered
+  // summaries stay the single source of truth). Mirrors memberEventNonce → ShareModal.
+  const [activityNonce, setActivityNonce] = useState(0);
   // Set when the board is pulled out from under us mid-view — deleted by its owner, or our own
   // access revoked. Holds the message to show instead of yanking the page away. (M5 Pass B.)
   const [goneReason, setGoneReason] = useState<string | null>(null);
   // Bumped on any MEMBER_* event, so an open Share modal knows to refetch its roster.
   const [memberEventNonce, setMemberEventNonce] = useState(0);
+  // Who has this board open right now — server-authoritative, replaced wholesale by each
+  // PRESENCE event (derived from live subscriptions, not stored anywhere).
+  const [viewers, setViewers] = useState<PresenceViewer[]>([]);
 
   // Permissions, derived once from the role the server sent with the board and then threaded
   // down as plain booleans — components shouldn't each re-derive policy from a role string.
@@ -166,6 +175,19 @@ function BoardContent() {
   // --- real-time: apply other people's changes as they happen (M5) ---
 
   function handleBoardEvent(event: BoardEvent) {
+    // Presence is handled *before* the echo-skip below: it carries a null actorId and must reach
+    // everyone — including whoever's arrival or departure triggered it. It's the whole live viewer
+    // list, so we just replace ours with it.
+    if (event.type === "PRESENCE") {
+      setViewers(event.payload as PresenceViewer[]);
+      return;
+    }
+
+    // Any logged change refreshes an open Activity feed — bumped *before* the echo-skip so our
+    // own actions show up in our own feed too (everything but PRESENCE and BOARD_DELETED is logged
+    // server-side). Harmless when the panel is closed: nothing is mounted to refetch.
+    if (event.type !== "BOARD_DELETED") setActivityNonce((n) => n + 1);
+
     // Our own change, echoed back. We already applied it optimistically and reconciled to the
     // server's rank; re-applying would fight an in-flight drag. (The server broadcasts to the
     // actor too, precisely so we can recognize and skip it here.) This also means an owner never
@@ -522,8 +544,16 @@ function BoardContent() {
           {/* Owning is the unremarkable case — only a shared-in role is worth labelling. */}
           {!isOwner && <RoleBadge role={board.myRole} />}
           <ConnectionDot state={connection} />
+          <PresenceStack viewers={viewers} currentUserId={user?.id} />
         </div>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setActivityOpen(true)}
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+          >
+            Activity
+          </button>
           <button
             type="button"
             onClick={() => setSharing(true)}
@@ -605,6 +635,15 @@ function BoardContent() {
           isOwner={isOwner}
           refreshSignal={memberEventNonce}
           onClose={() => setSharing(false)}
+        />
+      )}
+
+      {activityOpen && (
+        <ActivityPanel
+          boardId={id}
+          currentUserId={user?.id}
+          refreshSignal={activityNonce}
+          onClose={() => setActivityOpen(false)}
         />
       )}
     </main>

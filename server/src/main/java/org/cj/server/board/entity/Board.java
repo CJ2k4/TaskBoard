@@ -5,6 +5,8 @@ import java.util.UUID;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
@@ -38,6 +40,15 @@ public class Board {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /** The current shareable invite link's token (M6), or null when no link is active. */
+    @Column(name = "invite_token")
+    private UUID inviteToken;
+
+    /** The role that redeeming the link grants — EDITOR or VIEWER, never OWNER. Null with no link. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "invite_link_role", length = 16)
+    private Role inviteLinkRole;
+
     protected Board() {
     }
 
@@ -61,6 +72,23 @@ public class Board {
         this.updatedAt = Instant.now();
     }
 
+    /**
+     * Issue (or rotate) the shareable invite link at {@code role}, minting a fresh token so any
+     * previously-shared link stops working. Deliberately does <b>not</b> bump {@code updatedAt}:
+     * the link is owner-only side metadata, not board content, and isn't part of the last-write-
+     * wins field-edit race.
+     */
+    public void setInviteLink(Role role) {
+        this.inviteToken = UUID.randomUUID();
+        this.inviteLinkRole = role;
+    }
+
+    /** Disable the invite link — an outstanding URL immediately stops resolving. */
+    public void clearInviteLink() {
+        this.inviteToken = null;
+        this.inviteLinkRole = null;
+    }
+
     public UUID getId() {
         return id;
     }
@@ -79,5 +107,13 @@ public class Board {
 
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    public UUID getInviteToken() {
+        return inviteToken;
+    }
+
+    public Role getInviteLinkRole() {
+        return inviteLinkRole;
     }
 }
