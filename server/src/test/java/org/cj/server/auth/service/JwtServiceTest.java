@@ -23,8 +23,8 @@ class JwtServiceTest {
     // Must be >= 32 bytes for HS256.
     private static final String SECRET = "test-secret-that-is-definitely-long-enough-0123456789";
 
-    private final JwtService jwt = new JwtService(SECRET, Duration.ofMinutes(15), Duration.ofDays(7));
-    private final User user = User.create("ada@example.com", "irrelevant-hash", "Ada");
+    private final JwtService jwt = new JwtService(SECRET, Duration.ofMinutes(15), Duration.ofDays(7), "");
+    private final User user = User.createOAuth("ada@example.com", "Ada", null);
 
     @Test
     void accessTokenRoundTripsWithClaims() {
@@ -59,7 +59,7 @@ class JwtServiceTest {
     void tokenSignedWithADifferentSecretIsRejected() {
         JwtService other = new JwtService(
                 "a-totally-different-secret-key-value-9876543210abcdef",
-                Duration.ofMinutes(15), Duration.ofDays(7));
+                Duration.ofMinutes(15), Duration.ofDays(7), "");
         String foreignToken = other.issueAccessToken(user);
 
         assertThatThrownBy(() -> jwt.parse(foreignToken)).isInstanceOf(JwtException.class);
@@ -68,7 +68,7 @@ class JwtServiceTest {
     @Test
     void expiredTokenIsRejected() {
         // Negative TTL → the token is born already expired.
-        JwtService shortLived = new JwtService(SECRET, Duration.ofSeconds(-10), Duration.ofSeconds(-10));
+        JwtService shortLived = new JwtService(SECRET, Duration.ofSeconds(-10), Duration.ofSeconds(-10), "");
         String token = shortLived.issueAccessToken(user);
 
         assertThatThrownBy(() -> jwt.parse(token)).isInstanceOf(ExpiredJwtException.class);

@@ -93,23 +93,8 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   return (await res.json()) as T;
 }
 
-export type RegisterBody = { email: string; password: string; name: string };
-export type LoginBody = { email: string; password: string };
-
-/** Typed wrappers for each auth endpoint. */
+/** Typed wrappers for each auth endpoint. Sign-in is Google-only. */
 export const authApi = {
-  register: (body: RegisterBody) =>
-    apiFetch<AuthResponse>("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-
-  login: (body: LoginBody) =>
-    apiFetch<AuthResponse>("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-
   /** Exchange a Google Sign-In ID token for our own token pair (find-or-create by email). */
   google: (idToken: string) =>
     apiFetch<AuthResponse>("/api/auth/google", {

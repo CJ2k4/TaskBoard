@@ -57,7 +57,13 @@ export function GoogleSignInButton({
     if (ready) render();
   }, [ready, render]);
 
-  if (!CLIENT_ID) return null;
+  if (!CLIENT_ID) {
+    return (
+      <p className="text-center text-sm text-red-600 dark:text-red-400">
+        Google sign-in isn&apos;t configured (set NEXT_PUBLIC_GOOGLE_CLIENT_ID).
+      </p>
+    );
+  }
 
   return (
     <>
@@ -68,28 +74,5 @@ export function GoogleSignInButton({
       />
       <div ref={containerRef} className="flex justify-center" />
     </>
-  );
-}
-
-/**
- * The "Continue with Google" block for the auth pages: an "or" divider above the Google button.
- * Renders nothing when Google isn't configured, so the divider never appears on its own.
- */
-export function GoogleAuthSection({
-  onCredential,
-}: {
-  onCredential: (idToken: string) => void;
-}) {
-  if (!CLIENT_ID) return null;
-
-  return (
-    <div className="mt-6">
-      <div className="mb-4 flex items-center gap-3">
-        <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
-        <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">or</span>
-        <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
-      </div>
-      <GoogleSignInButton onCredential={onCredential} />
-    </div>
   );
 }

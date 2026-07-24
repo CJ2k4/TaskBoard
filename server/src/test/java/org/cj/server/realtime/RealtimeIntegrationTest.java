@@ -64,6 +64,12 @@ class RealtimeIntegrationTest {
     @Autowired
     ObjectMapper om;
 
+    @Autowired
+    org.cj.server.auth.repository.UserRepository users;
+
+    @Autowired
+    org.cj.server.auth.service.JwtService jwt;
+
     /** How long to wait for a message that should arrive. Generous: failure here is a hang. */
     private static final long EXPECT_TIMEOUT_MS = 5_000;
 
@@ -74,20 +80,12 @@ class RealtimeIntegrationTest {
 
     private record TestUser(String id, String token, String refreshToken, String email) {}
 
-    private TestUser newUser() throws Exception {
+    private TestUser newUser() {
         String email = "rt-" + UUID.randomUUID() + "@example.com";
-        JsonNode body = json(mvc.perform(post("/api/auth/register")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"email":"%s","password":"hunter2secret","name":"Ada"}"""
-                                .formatted(email)))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString());
-        return new TestUser(
-                body.get("user").get("id").asText(),
-                body.get("accessToken").asText(),
-                body.get("refreshToken").asText(),
-                email);
+        org.cj.server.auth.entity.User u =
+                users.save(org.cj.server.auth.entity.User.createOAuth(email, "Ada", null));
+        org.cj.server.auth.dto.TokenPair tokens = jwt.issueTokens(u);
+        return new TestUser(u.getId().toString(), tokens.accessToken(), tokens.refreshToken(), email);
     }
 
     private MockHttpServletRequestBuilder auth(MockHttpServletRequestBuilder b, TestUser user) {

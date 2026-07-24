@@ -11,6 +11,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+
+import org.cj.server.support.IntegrationTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -28,34 +30,11 @@ import org.cj.server.board.repository.BoardMembershipRepository;
  * HTTP with a real access token obtained by registering. Also asserts the owner's membership
  * row is created and cleaned up, since M4's authorization will depend on it.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-class BoardIntegrationTest {
-
-    @Autowired
-    MockMvc mvc;
-
-    @Autowired
-    ObjectMapper om;
+class BoardIntegrationTest extends IntegrationTest {
 
     @Autowired
     BoardMembershipRepository memberships;
 
-    /** Register a fresh user and return its access token. */
-    private String newUserToken() throws Exception {
-        String email = "u-" + UUID.randomUUID() + "@example.com";
-        String body = """
-                {"email":"%s","password":"hunter2secret","name":"Ada"}""".formatted(email);
-        String json = mvc.perform(post("/api/auth/register")
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
-        return om.readTree(json).get("accessToken").asText();
-    }
-
-    private MockHttpServletRequestBuilder auth(MockHttpServletRequestBuilder builder, String token) {
-        return builder.header("Authorization", "Bearer " + token);
-    }
 
     private JsonNode createBoard(String token, String name) throws Exception {
         String json = mvc.perform(auth(post("/api/boards"), token)

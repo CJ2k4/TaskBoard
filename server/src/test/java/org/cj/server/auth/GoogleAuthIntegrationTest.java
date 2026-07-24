@@ -17,7 +17,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import org.cj.server.auth.dto.GoogleLoginRequest;
-import org.cj.server.auth.dto.RegisterRequest;
 import org.cj.server.auth.service.GoogleTokenVerifier;
 import org.cj.server.auth.service.GoogleTokenVerifier.GoogleAccount;
 
@@ -73,31 +72,31 @@ class GoogleAuthIntegrationTest {
     }
 
     @Test
-    void googleSignInLinksToAnExistingAccountByEmail() throws Exception {
+    void repeatGoogleSignInReturnsSameAccountAndBackfillsAvatar() throws Exception {
         String email = uniqueEmail();
 
-        // Register a password account first, note its id.
-        String registered = mvc.perform(post("/api/auth/register")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(new RegisterRequest(email, "hunter2secret", "Ada"))))
-                .andExpect(status().isCreated())
+        // First sign-in creates the account (no avatar yet).
+        when(googleTokenVerifier.verify("any-token-the-stub-ignores"))
+                .thenReturn(new GoogleAccount(email, "Ada", null, true));
+        String first = mvc.perform(post("/api/auth/google")
+                        .contentType(MediaType.APPLICATION_JSON).content(googleBody()))
+                .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        String registeredId = om.readTree(registered).get("user").get("id").asText();
+        String firstId = om.readTree(first).get("user").get("id").asText();
 
-        // Same email via Google → the SAME account (linked), not a new one.
+        // Second sign-in with the same email → the SAME account (find-or-create by email),
+        // and the avatar is backfilled onto the previously-avatarless account.
         when(googleTokenVerifier.verify("any-token-the-stub-ignores"))
                 .thenReturn(new GoogleAccount(email, "Ada", "https://pic.example/ada.png", true));
-
-        String viaGoogle = mvc.perform(post("/api/auth/google")
+        String second = mvc.perform(post("/api/auth/google")
                         .contentType(MediaType.APPLICATION_JSON).content(googleBody()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.user.email").value(email))
                 .andReturn().getResponse().getContentAsString();
-        JsonNode googleUser = om.readTree(viaGoogle).get("user");
+        JsonNode secondUser = om.readTree(second).get("user");
 
-        assertThat(googleUser.get("id").asText()).isEqualTo(registeredId);
-        // The avatar was backfilled onto the previously-avatarless account.
-        assertThat(googleUser.get("imageUrl").asText()).isEqualTo("https://pic.example/ada.png");
+        assertThat(secondUser.get("id").asText()).isEqualTo(firstId);
+        assertThat(secondUser.get("imageUrl").asText()).isEqualTo("https://pic.example/ada.png");
     }
 
     @Test

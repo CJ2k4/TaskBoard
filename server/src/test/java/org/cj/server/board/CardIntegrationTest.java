@@ -10,6 +10,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+
+import org.cj.server.support.IntegrationTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -24,30 +26,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * Full-stack card CRUD test. Appends yield increasing ranks and the correct denormalized
  * boardId; edits persist; access is scoped to the owning board.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-class CardIntegrationTest {
+class CardIntegrationTest extends IntegrationTest {
 
-    @Autowired
-    MockMvc mvc;
-
-    @Autowired
-    ObjectMapper om;
-
-    private String newUserToken() throws Exception {
-        String email = "u-" + UUID.randomUUID() + "@example.com";
-        String body = """
-                {"email":"%s","password":"hunter2secret","name":"Ada"}""".formatted(email);
-        String json = mvc.perform(post("/api/auth/register")
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
-        return om.readTree(json).get("accessToken").asText();
-    }
-
-    private MockHttpServletRequestBuilder auth(MockHttpServletRequestBuilder b, String token) {
-        return b.header("Authorization", "Bearer " + token);
-    }
 
     private String createBoard(String token) throws Exception {
         return om.readTree(mvc.perform(auth(post("/api/boards"), token)
