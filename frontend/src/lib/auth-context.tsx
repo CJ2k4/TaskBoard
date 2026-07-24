@@ -46,6 +46,8 @@ type AuthContextValue = {
   authFetch: <T>(path: string, init?: RequestInit) => Promise<T>;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
+  /** Sign in with a Google ID token (from Google Identity Services). */
+  loginWithGoogle: (idToken: string) => Promise<void>;
   logout: () => void;
 };
 
@@ -107,6 +109,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [applySession],
   );
 
+  const loginWithGoogle = useCallback(
+    async (idToken: string) => {
+      const res = await authApi.google(idToken);
+      applySession(res.accessToken, res.refreshToken, res.user);
+    },
+    [applySession],
+  );
+
   const logout = useCallback(() => clearSession(), [clearSession]);
 
   const getAccessToken = useCallback(() => accessTokenRef.current, []);
@@ -155,7 +165,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ status, user, getAccessToken, authFetch, login, register, logout }}
+      value={{
+        status,
+        user,
+        getAccessToken,
+        authFetch,
+        login,
+        register,
+        loginWithGoogle,
+        logout,
+      }}
     >
       {children}
     </AuthContext.Provider>

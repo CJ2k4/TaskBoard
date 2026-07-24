@@ -13,8 +13,10 @@ import org.cj.server.board.dto.DeletedRef;
 import org.cj.server.board.dto.MoveCardRequest;
 import org.cj.server.board.entity.BoardColumn;
 import org.cj.server.board.entity.Card;
+import org.cj.server.board.entity.MembershipStatus;
 import org.cj.server.board.entity.Role;
 import org.cj.server.board.repository.BoardColumnRepository;
+import org.cj.server.board.repository.BoardMembershipRepository;
 import org.cj.server.board.repository.CardRepository;
 import org.cj.server.common.exception.NotFoundException;
 import org.cj.server.common.ranking.LexoRank;
@@ -37,13 +39,16 @@ public class CardService {
 
     private final CardRepository cards;
     private final BoardColumnRepository columns;
+    private final BoardMembershipRepository memberships;
     private final BoardService boardService;
     private final ApplicationEventPublisher events;
 
-    public CardService(CardRepository cards, BoardColumnRepository columns, BoardService boardService,
+    public CardService(CardRepository cards, BoardColumnRepository columns,
+                       BoardMembershipRepository memberships, BoardService boardService,
                        ApplicationEventPublisher events) {
         this.cards = cards;
         this.columns = columns;
+        this.memberships = memberships;
         this.boardService = boardService;
         this.events = events;
     }
@@ -66,12 +71,30 @@ public class CardService {
     }
 
     @Transactional
-    public Card update(UUID cardId, UUID userId, String title, String description) {
+    public Card update(UUID cardId, UUID userId, String title, String description,
+                       String label, UUID assigneeId) {
         Card card = requireCardOnBoard(cardId, userId, Role.EDITOR);
-        card.edit(title, description);
+        requireAssigneeIsMember(card.getBoardId(), assigneeId);
+        card.edit(title, description, label, assigneeId);
         Card saved = cards.save(card);
         announce(saved, userId, BoardEventType.CARD_UPDATED);
         return saved;
+    }
+
+    /**
+     * A card can only be assigned to someone who is an active member of its board. Null means
+     * "unassigned" and is always allowed; anyone else is a 400 (a stale roster or bad request).
+     */
+    private void requireAssigneeIsMember(UUID boardId, UUID assigneeId) {
+        if (assigneeId == null) {
+            return;
+        }
+        boolean active = memberships.findByBoardIdAndUserId(boardId, assigneeId)
+                .map(m -> m.getStatus() == MembershipStatus.ACTIVE)
+                .orElse(false);
+        if (!active) {
+            throw new IllegalArgumentException("Assignee must be an active member of this board");
+        }
     }
 
     @Transactional

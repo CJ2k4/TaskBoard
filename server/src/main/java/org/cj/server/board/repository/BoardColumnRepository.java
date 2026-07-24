@@ -16,4 +16,7 @@ public interface BoardColumnRepository extends JpaRepository<BoardColumn, UUID> 
 
     /** The last column on a board — its rank is the lower bound when appending a new column. */
     Optional<BoardColumn> findFirstByBoardIdOrderByRankDesc(UUID boardId);
+
+    /** How many columns a board has — for the dashboard overview card. */
+    long countByBoardId(UUID boardId);
 }

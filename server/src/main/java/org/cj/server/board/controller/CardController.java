@@ -48,7 +48,8 @@ public class CardController {
     public CardResponse update(@PathVariable UUID id,
                                @Valid @RequestBody UpdateCardRequest req,
                                @AuthenticationPrincipal AuthPrincipal me) {
-        return CardResponse.from(cardService.update(id, me.userId(), req.title(), req.description()));
+        return CardResponse.from(cardService.update(
+                id, me.userId(), req.title(), req.description(), req.label(), req.assigneeId()));
     }
 
     /**

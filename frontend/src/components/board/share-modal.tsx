@@ -86,11 +86,11 @@ export function ShareModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-24"
+      className="animate-fade-in fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-24"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-800 dark:bg-zinc-950"
+        className="animate-pop-in w-full max-w-lg rounded-xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-800 dark:bg-zinc-950"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-start justify-between gap-4">

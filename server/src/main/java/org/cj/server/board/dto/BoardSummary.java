@@ -14,6 +14,7 @@ import org.cj.server.board.entity.Board;
 public record BoardSummary(
         UUID id,
         String name,
+        String description,
         UUID ownerId,
         Instant createdAt,
         Instant updatedAt) {
@@ -22,6 +23,7 @@ public record BoardSummary(
         return new BoardSummary(
                 board.getId(),
                 board.getName(),
+                board.getDescription(),
                 board.getOwnerId(),
                 board.getCreatedAt(),
                 board.getUpdatedAt());

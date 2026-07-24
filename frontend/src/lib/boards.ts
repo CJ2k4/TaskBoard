@@ -22,6 +22,8 @@ export type Role = "OWNER" | "EDITOR" | "VIEWER";
 export type Board = {
   id: string;
   name: string;
+  /** A short optional board description, shown on the dashboard overview cards. */
+  description: string | null;
   ownerId: string;
   /**
    * The *caller's* role on this board — not a property of the board itself. The server sends it
@@ -31,6 +33,20 @@ export type Board = {
   myRole: Role;
   createdAt: string;
   updatedAt: string;
+};
+
+/** The minimum an avatar needs, mirroring the server's `BoardOverviewResponse.MemberSummary`. */
+export type MemberSummary = { userId: string; name: string };
+
+/**
+ * A board as the dashboard grid shows it: its own fields plus summary counts and the active
+ * member roster (for the avatar stack). Mirrors the server's `BoardOverviewResponse` — richer
+ * than {@link Board} because the list endpoint computes this enrichment the others don't need.
+ */
+export type BoardOverview = Board & {
+  columnCount: number;
+  cardCount: number;
+  members: MemberSummary[];
 };
 
 export type Column = {
@@ -48,6 +64,10 @@ export type Card = {
   boardId: string;
   title: string;
   description: string | null;
+  /** Optional free-text tag shown as a chip. */
+  label: string | null;
+  /** Optional assignee — an app_user id; the name is resolved client-side from the board roster. */
+  assigneeId: string | null;
   rank: string;
   createdAt: string;
   updatedAt: string;
@@ -64,7 +84,7 @@ const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
 // --- Boards ---------------------------------------------------------------
 
 export const listBoards = (authFetch: AuthFetch) =>
-  authFetch<Board[]>("/api/boards");
+  authFetch<BoardOverview[]>("/api/boards");
 
 export const createBoard = (authFetch: AuthFetch, name: string) =>
   authFetch<Board>("/api/boards", { method: "POST", ...json({ name }) });
@@ -72,8 +92,20 @@ export const createBoard = (authFetch: AuthFetch, name: string) =>
 export const getBoard = (authFetch: AuthFetch, id: string) =>
   authFetch<BoardDetail>(`/api/boards/${id}`);
 
-export const renameBoard = (authFetch: AuthFetch, id: string, name: string) =>
-  authFetch<Board>(`/api/boards/${id}`, { method: "PATCH", ...json({ name }) });
+/**
+ * Edit a board's name and description together (the server PATCH is a full edit of the board's
+ * own fields, so both are always sent — pass the current value for whichever you aren't changing).
+ */
+export const updateBoard = (
+  authFetch: AuthFetch,
+  id: string,
+  name: string,
+  description: string | null,
+) =>
+  authFetch<Board>(`/api/boards/${id}`, {
+    method: "PATCH",
+    ...json({ name, description }),
+  });
 
 export const deleteBoard = (authFetch: AuthFetch, id: string) =>
   authFetch<void>(`/api/boards/${id}`, { method: "DELETE" });
@@ -123,10 +155,12 @@ export const updateCard = (
   id: string,
   title: string,
   description: string | null,
+  label: string | null,
+  assigneeId: string | null,
 ) =>
   authFetch<Card>(`/api/cards/${id}`, {
     method: "PATCH",
-    ...json({ title, description }),
+    ...json({ title, description, label, assigneeId }),
   });
 
 export const deleteCard = (authFetch: AuthFetch, id: string) =>

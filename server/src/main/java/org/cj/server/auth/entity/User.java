@@ -74,6 +74,24 @@ public class User {
         return new User(UUID.randomUUID(), email, passwordHash, name, null, Instant.now());
     }
 
+    /**
+     * Factory for an OAuth-only account (e.g. Google): no password, but an avatar URL from the
+     * provider. The caller passes an already-lowercased email.
+     */
+    public static User createOAuth(String email, String name, String imageUrl) {
+        return new User(UUID.randomUUID(), email, null, name, imageUrl, Instant.now());
+    }
+
+    /**
+     * Backfill the avatar from an OAuth provider on an existing account — only when we don't
+     * already have one, so we never clobber a picture the user set another way.
+     */
+    public void linkOAuthAvatar(String imageUrl) {
+        if (this.imageUrl == null && imageUrl != null) {
+            this.imageUrl = imageUrl;
+        }
+    }
+
     public UUID getId() {
         return id;
     }

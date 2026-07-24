@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -33,7 +33,7 @@ import {
   getBoard,
   moveCard,
   moveColumn,
-  renameBoard,
+  updateBoard,
   renameColumn,
   updateCard,
   type BoardDetail,
@@ -43,8 +43,9 @@ import {
   type MoveColumnBody,
 } from "@/lib/boards";
 import { Protected } from "@/components/protected";
+import { BrandMark } from "@/components/brand-mark";
 import { BoardColumnView } from "@/components/board/board-column-view";
-import { CardModal } from "@/components/board/card-modal";
+import { CardModal, type Assignable } from "@/components/board/card-modal";
 import { CardFace } from "@/components/board/sortable-card";
 import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
 import { RoleBadge, ShareModal } from "@/components/board/share-modal";
@@ -52,7 +53,7 @@ import { PresenceStack } from "@/components/board/presence-stack";
 import { ActivityPanel } from "@/components/board/activity-panel";
 import { applyBoardEvent, type BoardEvent, type PresenceViewer } from "@/lib/board-events";
 import { useBoardEvents, type ConnectionState } from "@/lib/realtime";
-import type { Membership } from "@/lib/members";
+import { listMembers, type Membership } from "@/lib/members";
 
 // --- pure helpers over the nested board (used by the drag handlers) ---
 
@@ -151,6 +152,10 @@ function BoardContent() {
   // Who has this board open right now — server-authoritative, replaced wholesale by each
   // PRESENCE event (derived from live subscriptions, not stored anywhere).
   const [viewers, setViewers] = useState<PresenceViewer[]>([]);
+  // The board roster — used to offer assignee choices in the card modal and to resolve an
+  // assignee id → name/avatar on the card face. Refetched whenever a MEMBER_* event bumps
+  // memberEventNonce, so a newly added/removed member shows up (or disappears) without a reload.
+  const [members, setMembers] = useState<Membership[]>([]);
 
   // Permissions, derived once from the role the server sent with the board and then threaded
   // down as plain booleans — components shouldn't each re-derive policy from a role string.
@@ -171,6 +176,35 @@ function BoardContent() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Keep the roster fresh for the assignee picker. Non-fatal on failure — the picker just stays
+  // empty; a VIEWER may still read cards. memberEventNonce re-runs it after any MEMBER_* event.
+  useEffect(() => {
+    let cancelled = false;
+    listMembers(authFetch, id)
+      .then((rows) => {
+        if (!cancelled) setMembers(rows);
+      })
+      .catch(() => {
+        /* ignore — assignee choices are a convenience, not a gate */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authFetch, id, memberEventNonce]);
+
+  // Active members with a real account, keyed by id → name, for assignee resolution + choices.
+  const assigneeNameById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const m of members) {
+      if (m.status === "ACTIVE" && m.userId && m.name) map[m.userId] = m.name;
+    }
+    return map;
+  }, [members]);
+  const assignableMembers = useMemo<Assignable[]>(
+    () => Object.entries(assigneeNameById).map(([userId, name]) => ({ userId, name })),
+    [assigneeNameById],
+  );
 
   // --- real-time: apply other people's changes as they happen (M5) ---
 
@@ -293,9 +327,21 @@ function BoardContent() {
     replaceColumnCards(columnId, (cards) => [...cards, card]);
   }
 
-  async function handleSaveCard(title: string, description: string | null) {
+  async function handleSaveCard(
+    title: string,
+    description: string | null,
+    label: string | null,
+    assigneeId: string | null,
+  ) {
     if (openCard === null) return;
-    const updated = await updateCard(authFetch, openCard.id, title, description);
+    const updated = await updateCard(
+      authFetch,
+      openCard.id,
+      title,
+      description,
+      label,
+      assigneeId,
+    );
     replaceColumnCards(updated.columnId, (cards) =>
       cards.map((c) => (c.id === updated.id ? updated : c)),
     );
@@ -478,9 +524,20 @@ function BoardContent() {
     }
   }
 
+  // The board PATCH edits name + description together, so each handler resends the other field.
   async function handleRenameBoard(name: string) {
-    const updated = await renameBoard(authFetch, id, name);
-    setBoard((prev) => (prev === null ? prev : { ...prev, name: updated.name }));
+    const updated = await updateBoard(authFetch, id, name, board?.description ?? null);
+    setBoard((prev) =>
+      prev === null ? prev : { ...prev, name: updated.name, description: updated.description },
+    );
+  }
+
+  async function handleUpdateDescription(description: string | null) {
+    if (board === null) return;
+    const updated = await updateBoard(authFetch, id, board.name, description);
+    setBoard((prev) =>
+      prev === null ? prev : { ...prev, name: updated.name, description: updated.description },
+    );
   }
 
   async function handleDeleteBoard() {
@@ -525,15 +582,13 @@ function BoardContent() {
   }
 
   return (
-    <main className="flex min-h-full flex-1 flex-col bg-zinc-50 p-6 dark:bg-black">
-      <header className="mb-6 flex items-center justify-between gap-4">
+    <main className="animate-page-in flex min-h-full flex-1 flex-col bg-zinc-50 dark:bg-black">
+      <header className="flex h-14 items-center justify-between gap-4 border-b border-[rgba(29,28,24,0.09)] bg-[#FBFAF7] px-6">
         <div className="flex items-center gap-3">
-          <Link
-            href="/dashboard"
-            className="text-sm text-zinc-500 hover:underline dark:text-zinc-400"
-          >
-            ← Boards
-          </Link>
+          <BrandMark />
+          <span className="text-lg text-zinc-300 dark:text-zinc-600" aria-hidden>
+            /
+          </span>
           {isOwner ? (
             <BoardTitle name={board.name} onRename={handleRenameBoard} />
           ) : (
@@ -567,6 +622,12 @@ function BoardContent() {
         </div>
       </header>
 
+      <div className="flex flex-1 flex-col p-6">
+      <BoardDescription
+        description={board.description}
+        canEdit={isOwner}
+        onSave={handleUpdateDescription}
+      />
       {moveError && (
         <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
           <span>{moveError}</span>
@@ -597,6 +658,7 @@ function BoardContent() {
                 column={column}
                 cards={cards}
                 canEdit={canEdit}
+                assigneeNameById={assigneeNameById}
                 onRename={(title) => handleRenameColumn(column.id, title)}
                 onDelete={() => handleDeleteColumn(column.id)}
                 onCreateCard={(title) => handleAddCard(column.id, title)}
@@ -609,7 +671,12 @@ function BoardContent() {
 
         <DragOverlay>
           {activeCard ? (
-            <CardFace card={activeCard} />
+            <CardFace
+              card={activeCard}
+              assigneeName={
+                activeCard.assigneeId ? assigneeNameById[activeCard.assigneeId] ?? null : null
+              }
+            />
           ) : activeColumn ? (
             <div className="w-72 rounded-xl border border-zinc-300 bg-zinc-100 p-3 text-sm font-semibold text-zinc-800 shadow-lg dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100">
               {activeColumn.title}
@@ -617,11 +684,16 @@ function BoardContent() {
           ) : null}
         </DragOverlay>
       </DndContext>
+      </div>
 
       {openCard && (
         <CardModal
           card={openCard}
           canEdit={canEdit}
+          columnTitle={
+            board.columns.find((c) => c.column.id === openCard.columnId)?.column.title ?? ""
+          }
+          members={assignableMembers}
           conflict={openCardConflict}
           onClose={closeCard}
           onSave={handleSaveCard}
@@ -647,6 +719,70 @@ function BoardContent() {
         />
       )}
     </main>
+  );
+}
+
+/**
+ * The board's description, shown under the header. An owner can click to edit it inline (and add
+ * one when there's none yet); everyone else sees the text, or nothing when it's empty. Saving
+ * sends the whole board edit (name unchanged) — this is the only place a description is set, and
+ * it's what the dashboard overview cards read.
+ */
+function BoardDescription({
+  description,
+  canEdit,
+  onSave,
+}: {
+  description: string | null;
+  canEdit: boolean;
+  onSave: (description: string | null) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(description ?? "");
+
+  async function save() {
+    const next = value.trim();
+    if (next === (description ?? "")) {
+      setEditing(false);
+      return;
+    }
+    await onSave(next === "" ? null : next);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") {
+            setValue(description ?? "");
+            setEditing(false);
+          }
+        }}
+        maxLength={280}
+        placeholder="Add a description…"
+        className="mb-4 w-full max-w-xl rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+      />
+    );
+  }
+
+  if (!description && !canEdit) return null;
+
+  return (
+    <p
+      onClick={canEdit ? () => setEditing(true) : undefined}
+      title={canEdit ? "Click to edit the description" : undefined}
+      className={`mb-4 text-sm ${
+        description ? "text-zinc-500 dark:text-zinc-400" : "text-zinc-400 dark:text-zinc-600"
+      } ${canEdit ? "cursor-text" : ""}`}
+    >
+      {description ?? "Add a description…"}
+    </p>
   );
 }
 
@@ -744,7 +880,7 @@ function AddColumn({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
 
 function CenteredNote({ children }: { children: React.ReactNode }) {
   return (
-    <main className="flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
+    <main className="animate-page-in flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
       <p className="text-sm text-zinc-500 dark:text-zinc-400">{children}</p>
     </main>
   );

@@ -110,6 +110,13 @@ export const authApi = {
       body: JSON.stringify(body),
     }),
 
+  /** Exchange a Google Sign-In ID token for our own token pair (find-or-create by email). */
+  google: (idToken: string) =>
+    apiFetch<AuthResponse>("/api/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ idToken }),
+    }),
+
   refresh: (refreshToken: string) =>
     apiFetch<AuthResponse>("/api/auth/refresh", {
       method: "POST",
