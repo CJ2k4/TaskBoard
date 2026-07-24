@@ -31,4 +31,8 @@ public interface BoardMembershipRepository extends JpaRepository<BoardMembership
 
     /** A user's active memberships — the basis of "boards I can see" (M4.3). */
     List<BoardMembership> findByUserIdAndStatus(UUID userId, MembershipStatus status);
+
+    /** Memberships across several boards at once — used to build the dashboard overview rosters
+     *  without a per-board query. */
+    List<BoardMembership> findByBoardIdInAndStatus(List<UUID> boardIds, MembershipStatus status);
 }

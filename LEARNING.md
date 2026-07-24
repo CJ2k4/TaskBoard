@@ -2465,6 +2465,65 @@ share a board with a single link.
 
 ---
 
+## Post-M6 — UI polish & card enrichment
+
+A run of front-end polish, then the first real schema change since M6: cards gained a **label** and
+an **assignee**.
+
+### Step P.1 — Light theme, one variant flip · _2026-07-24_
+
+Every component was written `bg-white dark:bg-zinc-950`-style from day one, so the app already *had*
+a light theme — it was just losing to the OS `prefers-color-scheme: dark`. Two lines in
+`globals.css` settle it: drop the `@media (prefers-color-scheme: dark)` override, and redefine
+Tailwind v4's dark variant as **class-based** — `@custom-variant dark (&:where(.dark, .dark *));`.
+No `.dark` class is ever added to the tree, so every `dark:` utility goes inert and the light base
+always wins — the whole app flips with no component edits. Alongside it: the dashboard became a card
+grid closed by a `+ New board` tile, and the top bar became a real nav bar (warm off-white
+`#FBFAF7`, hairline bottom border `rgba(29,28,24,.09)`) shared in spirit by the dashboard `Navbar`
+and the board header.
+
+### Step P.2 — Card labels & assignees (a schema change that rides the existing pipes) · _2026-07-24_
+
+The card modal grew to match a fuller design: a status chip (its column), an editable **label**
+chip, an **assignee** (avatar + picker), and the description. Two of those are newly persisted
+fields, so this touched every layer — but the interesting part is how little *new* plumbing it
+needed.
+
+**Backend.** `V6__card_label_assignee.sql` adds `label varchar(40)` and
+`assignee_id uuid REFERENCES app_user(id) ON DELETE SET NULL` — the same delete posture as
+`board_activity.actor_id`: deleting a user un-assigns their cards, never deletes them. The `Card`
+entity carries `assigneeId` as a **bare `UUID`, not a JPA `@ManyToOne`** — deliberately, so the
+whole-board load stays the join-free read it has always been and `CardResponse.from(card)` stays a
+pure entity→DTO map. Both fields are last-write-wins, so they join `title`/`description` in
+`Card.edit(...)` and bump `updatedAt`. The one new rule: an assignee must be an **active member of
+the card's board**, validated in `CardService.update` against `BoardMembershipRepository` (a 400
+otherwise; `null` = unassigned is always allowed).
+
+**Why the wire needed almost nothing.** `CardResponse` is the single record both the REST endpoints
+*and* the real-time `CARD_*` events carry — so adding `label`/`assigneeId` to it makes the new
+fields flow through the live event stream **for free**. The client's pure `applyBoardEvent` folds
+the whole `CardResponse` into state, so another user's label/assignee change lands live with zero
+new event wiring, no new `BoardEventType`, no new broadcast path.
+
+**Frontend.** A card stores only `assigneeId`; the *name* (for the avatar monogram) is resolved
+client-side from the board roster — the board page fetches `listMembers` (refetched on any
+`MEMBER_*` via the existing nonce) and threads an `id → name` map down to the card face, while the
+modal offers the active members as assignee choices. The `initials`/`hue`/`avatarColor` helpers the
+presence stack already used were lifted into `src/lib/avatar.ts` and shared, so an assignee's colour
+matches their presence dot. The label renders as an indigo chip on both the card face and the modal.
+
+```bash
+cd server && ./mvnw test          # 118 tests, still green (V6 applies cleanly)
+cd frontend && npx tsc --noEmit   # clean
+```
+
+The lesson worth keeping: **a well-placed DTO is a multiplier.** Because ordering, auth, and
+real-time were already funnelled through `CardResponse` + the board guard + the after-commit event,
+a two-column schema change reached the live multi-user UI without inventing a single new endpoint,
+event type, or broadcast path.
+
+---
+
 ## Quick command reference
 
 ```bash

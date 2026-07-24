@@ -37,6 +37,15 @@ public class Card {
     @Column(columnDefinition = "text")
     private String description;
 
+    /** Optional short free-text tag rendered as a chip (e.g. "BACKEND"). */
+    @Column(length = 40)
+    private String label;
+
+    /** Optional assignee — an app_user id. Kept as a bare id (not a JPA relation) so the
+     *  board aggregate load stays join-free; the client resolves the name from the member list. */
+    @Column(name = "assignee_id")
+    private UUID assigneeId;
+
     @Column(nullable = false, length = 64)
     private String rank;
 
@@ -50,27 +59,34 @@ public class Card {
     }
 
     private Card(UUID id, UUID columnId, UUID boardId, String title, String description,
-                String rank, Instant createdAt, Instant updatedAt) {
+                String label, UUID assigneeId, String rank, Instant createdAt, Instant updatedAt) {
         this.id = id;
         this.columnId = columnId;
         this.boardId = boardId;
         this.title = title;
         this.description = description;
+        this.label = label;
+        this.assigneeId = assigneeId;
         this.rank = rank;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
     }
 
-    /** A new card in {@code columnId} (belonging to {@code boardId}) at a server-computed rank. */
+    /**
+     * A new card in {@code columnId} (belonging to {@code boardId}) at a server-computed rank.
+     * New cards start with no label and no assignee — both are set later via {@link #edit}.
+     */
     public static Card create(UUID columnId, UUID boardId, String title, String description, String rank) {
         Instant now = Instant.now();
-        return new Card(UUID.randomUUID(), columnId, boardId, title, description, rank, now, now);
+        return new Card(UUID.randomUUID(), columnId, boardId, title, description, null, null, rank, now, now);
     }
 
-    /** Edit title/description (last-write-wins fields), bumping {@code updatedAt}. */
-    public void edit(String title, String description) {
+    /** Edit the last-write-wins fields (title/description/label/assignee), bumping {@code updatedAt}. */
+    public void edit(String title, String description, String label, UUID assigneeId) {
         this.title = title;
         this.description = description;
+        this.label = label;
+        this.assigneeId = assigneeId;
         this.updatedAt = Instant.now();
     }
 
@@ -112,6 +128,14 @@ public class Card {
 
     public String getDescription() {
         return description;
+    }
+
+    public String getLabel() {
+        return label;
+    }
+
+    public UUID getAssigneeId() {
+        return assigneeId;
     }
 
     public String getRank() {

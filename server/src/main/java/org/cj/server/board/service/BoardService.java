@@ -1,16 +1,22 @@
 package org.cj.server.board.service;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.cj.server.auth.entity.User;
+import org.cj.server.auth.repository.UserRepository;
 import org.cj.server.board.dto.BoardDetailResponse;
 import org.cj.server.board.dto.BoardEventType;
+import org.cj.server.board.dto.BoardOverviewResponse;
 import org.cj.server.board.dto.BoardSummary;
-import org.cj.server.board.dto.BoardWithRole;
 import org.cj.server.board.dto.DeletedRef;
 import org.cj.server.board.entity.Board;
 import org.cj.server.board.entity.BoardColumn;
@@ -52,15 +58,17 @@ public class BoardService {
     private final BoardMembershipRepository memberships;
     private final BoardColumnRepository columns;
     private final CardRepository cards;
+    private final UserRepository users;
     private final ApplicationEventPublisher events;
 
     public BoardService(BoardRepository boards, BoardMembershipRepository memberships,
                         BoardColumnRepository columns, CardRepository cards,
-                        ApplicationEventPublisher events) {
+                        UserRepository users, ApplicationEventPublisher events) {
         this.boards = boards;
         this.memberships = memberships;
         this.columns = columns;
         this.cards = cards;
+        this.users = users;
         this.events = events;
     }
 
@@ -76,19 +84,49 @@ public class BoardService {
     }
 
     /**
-     * Every board the user can see — owned <em>or</em> shared with them — newest first, each
-     * paired with the role they hold on it. Two queries regardless of board count: the
-     * memberships, then the boards behind them (no per-board role lookup).
+     * The dashboard overview: every board the user can see — owned <em>or</em> shared — newest
+     * first, each with the caller's role, its column/card counts, and its active member roster
+     * (for the avatar stack). Batched to stay roughly constant in query count regardless of how
+     * many boards: the caller's memberships, the boards, all rosters in one {@code IN} query, and
+     * the users behind them in one more — then a per-board count pair (cheap at this scale).
      */
     @Transactional(readOnly = true)
-    public List<BoardWithRole> listAccessible(UUID userId) {
+    public List<BoardOverviewResponse> listOverview(UUID userId) {
         List<BoardMembership> mine = memberships.findByUserIdAndStatus(userId, MembershipStatus.ACTIVE);
         if (mine.isEmpty()) {
             return List.of();
         }
         List<UUID> boardIds = mine.stream().map(BoardMembership::getBoardId).toList();
+
+        // All active members across these boards, grouped by board; then the users behind them.
+        List<BoardMembership> allMembers =
+                memberships.findByBoardIdInAndStatus(boardIds, MembershipStatus.ACTIVE);
+        Map<UUID, User> usersById = users.findAllById(
+                        allMembers.stream().map(BoardMembership::getUserId).filter(Objects::nonNull).toList())
+                .stream().collect(Collectors.toMap(User::getId, Function.identity()));
+        Map<UUID, List<BoardMembership>> membersByBoard = allMembers.stream()
+                .collect(Collectors.groupingBy(BoardMembership::getBoardId));
+
         return boards.findByIdInOrderByCreatedAtDesc(boardIds).stream()
-                .map(board -> new BoardWithRole(board, roleOn(mine, board.getId())))
+                .map(board -> {
+                    List<BoardOverviewResponse.MemberSummary> roster =
+                            membersByBoard.getOrDefault(board.getId(), List.of()).stream()
+                                    .map(m -> usersById.get(m.getUserId()))
+                                    .filter(Objects::nonNull)
+                                    .map(u -> new BoardOverviewResponse.MemberSummary(u.getId(), u.getName()))
+                                    .toList();
+                    return new BoardOverviewResponse(
+                            board.getId(),
+                            board.getName(),
+                            board.getDescription(),
+                            board.getOwnerId(),
+                            roleOn(mine, board.getId()),
+                            columns.countByBoardId(board.getId()),
+                            cards.countByBoardId(board.getId()),
+                            roster,
+                            board.getCreatedAt(),
+                            board.getUpdatedAt());
+                })
                 .toList();
     }
 
@@ -115,11 +153,15 @@ public class BoardService {
         return BoardDetailResponse.of(board, boardColumns, boardCards, membership.getRole());
     }
 
-    /** Rename a board — owner only; an editor may change the contents, not the board itself. */
+    /**
+     * Edit a board's name and description — owner only; an editor may change the contents, not
+     * the board itself. Both fields are sent together (the PATCH is a full edit of the board's
+     * own fields), so a null description clears it.
+     */
     @Transactional
-    public Board rename(UUID boardId, UUID userId, String name) {
+    public Board update(UUID boardId, UUID userId, String name, String description) {
         Board board = requireBoardAccess(boardId, userId, Role.OWNER);
-        board.rename(name);
+        board.edit(name, description);
         Board saved = boards.save(board);
         events.publishEvent(new BoardChangedEvent(
                 boardId, userId, BoardEventType.BOARD_UPDATED, BoardSummary.from(saved)));

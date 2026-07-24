@@ -31,6 +31,7 @@ export function BoardColumnView({
   column,
   cards,
   canEdit,
+  assigneeNameById,
   onRename,
   onDelete,
   onCreateCard,
@@ -39,6 +40,8 @@ export function BoardColumnView({
   column: Column;
   cards: Card[];
   canEdit: boolean;
+  /** Maps an assignee's user id → display name, so a card can render its assignee avatar. */
+  assigneeNameById: Record<string, string>;
   onRename: (title: string) => Promise<void>;
   onDelete: () => Promise<void>;
   onCreateCard: (title: string) => Promise<void>;
@@ -69,6 +72,8 @@ export function BoardColumnView({
 
   const [newCard, setNewCard] = useState("");
   const [addingCard, setAddingCard] = useState(false);
+  // The composer is collapsed to a "+ Add card" affordance until opened.
+  const [addingCardOpen, setAddingCardOpen] = useState(false);
 
   async function saveTitle() {
     const next = title.trim();
@@ -173,6 +178,7 @@ export function BoardColumnView({
               key={card.id}
               card={card}
               canEdit={canEdit}
+              assigneeName={card.assigneeId ? assigneeNameById[card.assigneeId] ?? null : null}
               onClick={() => onCardClick(card)}
             />
           ))}
@@ -183,25 +189,51 @@ export function BoardColumnView({
         <p className="py-2 text-xs text-zinc-400 dark:text-zinc-600">No cards</p>
       )}
 
-      {canEdit && (
-        <form onSubmit={addCard} className="mt-2 flex flex-col gap-2">
-          <input
-            value={newCard}
-            onChange={(e) => setNewCard(e.target.value)}
-            placeholder="Add a card…"
-            className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
-          />
-          {newCard.trim() !== "" && (
-            <button
-              type="submit"
-              disabled={addingCard}
-              className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-            >
-              {addingCard ? "Adding…" : "Add card"}
-            </button>
-          )}
-        </form>
-      )}
+      {canEdit &&
+        (addingCardOpen ? (
+          <form onSubmit={addCard} className="animate-pop-in mt-2 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm">
+            <input
+              autoFocus
+              value={newCard}
+              onChange={(e) => setNewCard(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setNewCard("");
+                  setAddingCardOpen(false);
+                }
+              }}
+              placeholder="Card title…"
+              className="w-full border-none bg-transparent px-1 py-1 text-sm text-zinc-900 outline-none placeholder:text-zinc-400"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={addingCard || newCard.trim() === ""}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {addingCard ? "Adding…" : "Add card"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewCard("");
+                  setAddingCardOpen(false);
+                }}
+                className="text-sm font-medium text-zinc-500 transition hover:text-zinc-800"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAddingCardOpen(true)}
+            className="mt-2 flex items-center rounded-lg px-1 py-2 text-left text-sm font-medium text-zinc-500 transition hover:text-zinc-800"
+          >
+            + Add card
+          </button>
+        ))}
     </div>
   );
 }

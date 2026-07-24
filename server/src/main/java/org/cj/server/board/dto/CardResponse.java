@@ -12,6 +12,8 @@ public record CardResponse(
         UUID boardId,
         String title,
         String description,
+        String label,
+        UUID assigneeId,
         String rank,
         Instant createdAt,
         Instant updatedAt) {
@@ -23,6 +25,8 @@ public record CardResponse(
                 card.getBoardId(),
                 card.getTitle(),
                 card.getDescription(),
+                card.getLabel(),
+                card.getAssigneeId(),
                 card.getRank(),
                 card.getCreatedAt(),
                 card.getUpdatedAt());

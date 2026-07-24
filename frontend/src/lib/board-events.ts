@@ -39,6 +39,7 @@ export type DeletedRef = { id: string };
 export type BoardSummary = {
   id: string;
   name: string;
+  description: string | null;
   ownerId: string;
   createdAt: string;
   updatedAt: string;
@@ -145,7 +146,12 @@ export function applyBoardEvent(board: BoardDetail, event: BoardEvent): BoardDet
       // A rename is universal — every viewer sees the same new name. Take only the board's own
       // fields; never touch `myRole` (per-caller, absent from the payload) or `columns`.
       const summary = event.payload as BoardSummary;
-      return { ...board, name: summary.name, updatedAt: summary.updatedAt };
+      return {
+        ...board,
+        name: summary.name,
+        description: summary.description,
+        updatedAt: summary.updatedAt,
+      };
     }
     default:
       // BOARD_DELETED and MEMBER_* are identity- or navigation-dependent, and PRESENCE is live

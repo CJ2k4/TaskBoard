@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import org.cj.server.auth.security.AuthPrincipal;
 import org.cj.server.board.dto.BoardDetailResponse;
+import org.cj.server.board.dto.BoardOverviewResponse;
 import org.cj.server.board.dto.BoardResponse;
 import org.cj.server.board.dto.CreateBoardRequest;
 import org.cj.server.board.dto.UpdateBoardRequest;
@@ -50,10 +51,13 @@ public class BoardController {
         return BoardResponse.from(boardService.create(req.name(), me.userId()), Role.OWNER);
     }
 
-    /** Boards the user can see — owned or shared with them — each tagged with their role. */
+    /**
+     * Boards the user can see — owned or shared with them — each with their role plus the
+     * overview data the dashboard cards render (description, counts, member roster).
+     */
     @GetMapping
-    public List<BoardResponse> list(@AuthenticationPrincipal AuthPrincipal me) {
-        return boardService.listAccessible(me.userId()).stream().map(BoardResponse::from).toList();
+    public List<BoardOverviewResponse> list(@AuthenticationPrincipal AuthPrincipal me) {
+        return boardService.listOverview(me.userId());
     }
 
     /** Returns the whole board — columns and cards nested, in rank order. */
@@ -63,11 +67,12 @@ public class BoardController {
     }
 
     @PatchMapping("/{id}")
-    public BoardResponse rename(@PathVariable UUID id,
+    public BoardResponse update(@PathVariable UUID id,
                                 @Valid @RequestBody UpdateBoardRequest req,
                                 @AuthenticationPrincipal AuthPrincipal me) {
-        // Renaming is owner-only, so a successful call means the caller is the owner.
-        return BoardResponse.from(boardService.rename(id, me.userId(), req.name()), Role.OWNER);
+        // Editing the board is owner-only, so a successful call means the caller is the owner.
+        return BoardResponse.from(
+                boardService.update(id, me.userId(), req.name(), req.description()), Role.OWNER);
     }
 
     @DeleteMapping("/{id}")

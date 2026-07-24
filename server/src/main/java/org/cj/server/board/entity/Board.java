@@ -30,6 +30,10 @@ public class Board {
     @Column(nullable = false, length = 160)
     private String name;
 
+    /** A short optional description, shown on dashboard overview cards. */
+    @Column(length = 280)
+    private String description;
+
     @Column(name = "owner_id", nullable = false)
     private UUID ownerId;
 
@@ -66,9 +70,10 @@ public class Board {
         return new Board(UUID.randomUUID(), name, ownerId, now, now);
     }
 
-    /** Rename the board, bumping {@code updatedAt}. */
-    public void rename(String name) {
+    /** Edit the board's name and description (last-write-wins), bumping {@code updatedAt}. */
+    public void edit(String name, String description) {
         this.name = name;
+        this.description = description;
         this.updatedAt = Instant.now();
     }
 
@@ -95,6 +100,10 @@ public class Board {
 
     public String getName() {
         return name;
+    }
+
+    public String getDescription() {
+        return description;
     }
 
     public UUID getOwnerId() {

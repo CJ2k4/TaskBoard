@@ -25,4 +25,7 @@ public interface CardRepository extends JpaRepository<Card, UUID> {
 
     /** Whether a column has any card — used to block deleting a non-empty column. */
     boolean existsByColumnId(UUID columnId);
+
+    /** How many cards a board has — for the dashboard overview card. */
+    long countByBoardId(UUID boardId);
 }

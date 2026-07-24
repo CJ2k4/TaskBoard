@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/*
+ * Force the light theme app-wide: make the `dark:` variant class-based instead of
+ * following the OS `prefers-color-scheme`. Since no `.dark` class is ever added to the
+ * tree, every `dark:` override stays inert and the light base styles always render.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,15 +19,66 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/*
+ * Small, reusable entrance animations for overlays and expanding controls. `fade-in` is for a
+ * backdrop; `pop-in` gives a panel/composer a subtle rise + settle. Both are disabled under
+ * prefers-reduced-motion so the UI still works for anyone who asks for less motion.
+ */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Page-level enter transition: each route animates in on mount, so navigating between the
+ * dashboard and a board fades + rises the arriving page into view. */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 150ms ease-out;
+}
+
+.animate-pop-in {
+  animation: pop-in 160ms ease-out;
+}
+
+.animate-page-in {
+  animation: page-in 220ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-pop-in,
+  .animate-page-in {
+    animation: none;
+  }
 }

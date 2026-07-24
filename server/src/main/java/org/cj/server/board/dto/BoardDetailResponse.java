@@ -21,6 +21,7 @@ import org.cj.server.board.entity.Role;
 public record BoardDetailResponse(
         UUID id,
         String name,
+        String description,
         UUID ownerId,
         Role myRole,
         Instant createdAt,
@@ -51,6 +52,7 @@ public record BoardDetailResponse(
         return new BoardDetailResponse(
                 board.getId(),
                 board.getName(),
+                board.getDescription(),
                 board.getOwnerId(),
                 myRole,
                 board.getCreatedAt(),

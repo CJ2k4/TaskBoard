@@ -1,6 +1,7 @@
 "use client";
 
 import type { PresenceViewer } from "@/lib/board-events";
+import { avatarColor, initials } from "@/lib/avatar";
 
 /**
  * The "who's here right now" avatar cluster (M6), shown in the board header beside the live-dot.
@@ -13,21 +14,6 @@ import type { PresenceViewer } from "@/lib/board-events";
  */
 
 const MAX_AVATARS = 4;
-
-/** Two-initial monogram from a display name, e.g. "Ada Lovelace" → "AL". */
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-/** A stable-per-person hue so an avatar keeps its colour across renders. */
-function hue(id: string): number {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
-  return h;
-}
 
 export function PresenceStack({
   viewers,
@@ -60,7 +46,7 @@ export function PresenceStack({
             key={v.userId}
             title={you ? `${v.name} (you)` : v.name}
             className="-ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-zinc-50 text-[10px] font-semibold text-white first:ml-0 dark:border-black"
-            style={{ backgroundColor: `hsl(${hue(v.userId)} 55% 45%)` }}
+            style={{ backgroundColor: avatarColor(v.userId) }}
           >
             {initials(v.name)}
           </span>
