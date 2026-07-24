@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { safeNext, withNext } from "@/lib/next-url";
+import { GoogleAuthSection } from "@/components/google-sign-in-button";
 
 // useSearchParams forces a client-side bailout, which Next requires under a Suspense boundary.
 export default function LoginPage() {
@@ -18,7 +19,7 @@ export default function LoginPage() {
 }
 
 function LoginForm() {
-  const { status, login } = useAuth();
+  const { status, login, loginWithGoogle } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   // Where to go after logging in — the page we were bounced from, or the dashboard.
@@ -48,6 +49,16 @@ function LoginForm() {
       // 401 (bad credentials), 0 (backend down), or any other failure — one message.
       setError(err instanceof ApiError ? err.message : "Something went wrong.");
       setSubmitting(false);
+    }
+  }
+
+  async function handleGoogle(idToken: string) {
+    setError(null);
+    try {
+      await loginWithGoogle(idToken);
+      router.replace(redirectTo);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Google sign-in failed.");
     }
   }
 
@@ -104,6 +115,8 @@ function LoginForm() {
             {submitting ? "Logging in…" : "Log in"}
           </button>
         </form>
+
+        <GoogleAuthSection onCredential={handleGoogle} />
 
         <p className="mt-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
           No account?{" "}

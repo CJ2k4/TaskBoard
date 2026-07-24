@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import org.cj.server.auth.dto.AuthResponse;
+import org.cj.server.auth.dto.GoogleLoginRequest;
 import org.cj.server.auth.dto.LoginRequest;
 import org.cj.server.auth.dto.RefreshRequest;
 import org.cj.server.auth.dto.RegisterRequest;
@@ -51,6 +52,16 @@ public class AuthController {
     @PostMapping("/login")
     public AuthResponse login(@Valid @RequestBody LoginRequest req) {
         User user = authService.authenticate(req);
+        return AuthResponse.of(user, jwtService.issueTokens(user));
+    }
+
+    /**
+     * Sign in with Google: verify the ID token, find-or-create the account by verified email,
+     * and return the same token pair as password login. 200 OK (or 401 on an invalid token).
+     */
+    @PostMapping("/google")
+    public AuthResponse google(@Valid @RequestBody GoogleLoginRequest req) {
+        User user = authService.authenticateWithGoogle(req.idToken());
         return AuthResponse.of(user, jwtService.issueTokens(user));
     }
 

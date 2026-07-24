@@ -28,12 +28,14 @@ public class AuthService {
 
     private final UserRepository users;
     private final PasswordEncoder passwordEncoder;
+    private final GoogleTokenVerifier googleTokenVerifier;
     private final ApplicationEventPublisher events;
 
     public AuthService(UserRepository users, PasswordEncoder passwordEncoder,
-                       ApplicationEventPublisher events) {
+                       GoogleTokenVerifier googleTokenVerifier, ApplicationEventPublisher events) {
         this.users = users;
         this.passwordEncoder = passwordEncoder;
+        this.googleTokenVerifier = googleTokenVerifier;
         this.events = events;
     }
 
@@ -79,6 +81,39 @@ public class AuthService {
         }
         // This method runs in a read-only transaction, so any listener that writes (invite
         // resolution) must open its own transaction (REQUIRES_NEW on the listener side).
+        events.publishEvent(new UserSignedInEvent(user.getId(), user.getEmail()));
+        return user;
+    }
+
+    /**
+     * Sign in with a Google ID token: verify it, then find-or-create the account by its verified
+     * email. An existing account is <b>linked</b> (logged into, avatar backfilled) — same email is
+     * the same person — so a user who first registered with a password can also use Google, and
+     * vice versa. New accounts are OAuth-only (no password). Publishes {@link UserSignedInEvent}
+     * exactly as register/login do, so pending-invite resolution fires the same way.
+     *
+     * @throws org.springframework.security.authentication.BadCredentialsException the token is
+     *         invalid, or its email isn't verified by Google (→ 401)
+     */
+    @Transactional
+    public User authenticateWithGoogle(String idToken) {
+        GoogleTokenVerifier.GoogleAccount account = googleTokenVerifier.verify(idToken);
+        if (!account.emailVerified()) {
+            // Never trust an unverified email — it's the whole basis of email-linking.
+            throw new BadCredentialsException("Google account email is not verified");
+        }
+        String email = normalizeEmail(account.email());
+        String name = account.name() != null && !account.name().isBlank()
+                ? account.name().trim()
+                : email;
+
+        User user = users.findByEmail(email)
+                .map(existing -> {
+                    existing.linkOAuthAvatar(account.imageUrl());
+                    return existing;
+                })
+                .orElseGet(() -> users.save(User.createOAuth(email, name, account.imageUrl())));
+
         events.publishEvent(new UserSignedInEvent(user.getId(), user.getEmail()));
         return user;
     }

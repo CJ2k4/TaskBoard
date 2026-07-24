@@ -36,14 +36,18 @@ class AuthServiceTest {
     @Mock
     UserRepository users;
 
+    @Mock
+    GoogleTokenVerifier googleTokenVerifier;
+
     PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
     AuthService authService;
 
     @BeforeEach
     void setUp() {
         // No-op event publisher: these tests cover auth logic; the sign-in event's effect
-        // (pending-invite resolution) has its own integration test.
-        authService = new AuthService(users, passwordEncoder, event -> { });
+        // (pending-invite resolution) has its own integration test. The Google verifier is an
+        // unused mock here — the Google path has its own integration test.
+        authService = new AuthService(users, passwordEncoder, googleTokenVerifier, event -> { });
     }
 
     @Test

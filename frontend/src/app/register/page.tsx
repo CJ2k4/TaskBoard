@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { safeNext, withNext } from "@/lib/next-url";
+import { GoogleAuthSection } from "@/components/google-sign-in-button";
 
 // useSearchParams forces a client-side bailout, which Next requires under a Suspense boundary.
 export default function RegisterPage() {
@@ -18,7 +19,7 @@ export default function RegisterPage() {
 }
 
 function RegisterForm() {
-  const { status, register } = useAuth();
+  const { status, register, loginWithGoogle } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   // A fresh sign-up via an invite link should land on that board, not the empty dashboard.
@@ -62,6 +63,17 @@ function RegisterForm() {
         setError("Something went wrong.");
       }
       setSubmitting(false);
+    }
+  }
+
+  async function handleGoogle(idToken: string) {
+    setError(null);
+    setFieldErrors({});
+    try {
+      await loginWithGoogle(idToken);
+      router.replace(redirectTo);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Google sign-in failed.");
     }
   }
 
@@ -116,6 +128,8 @@ function RegisterForm() {
             {submitting ? "Creating…" : "Create account"}
           </button>
         </form>
+
+        <GoogleAuthSection onCredential={handleGoogle} />
 
         <p className="mt-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
           Already have an account?{" "}
