@@ -21,3 +21,6 @@ target/
 node_modules/
 .next/
 out/
+
+# Claude skills
+.claude/skills/
