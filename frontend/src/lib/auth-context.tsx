@@ -44,9 +44,7 @@ type AuthContextValue = {
    * rethrown (the route guard then redirects to /login).
    */
   authFetch: <T>(path: string, init?: RequestInit) => Promise<T>;
-  login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
-  /** Sign in with a Google ID token (from Google Identity Services). */
+  /** Sign in with a Google ID token (from Google Identity Services) — the only sign-in path. */
   loginWithGoogle: (idToken: string) => Promise<void>;
   logout: () => void;
 };
@@ -92,22 +90,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((res) => applySession(res.accessToken, res.refreshToken, res.user))
       .catch(() => clearSession()); // expired/invalid/tampered → treat as logged out
   }, [applySession, clearSession]);
-
-  const login = useCallback(
-    async (email: string, password: string) => {
-      const res = await authApi.login({ email, password });
-      applySession(res.accessToken, res.refreshToken, res.user);
-    },
-    [applySession],
-  );
-
-  const register = useCallback(
-    async (name: string, email: string, password: string) => {
-      const res = await authApi.register({ name, email, password });
-      applySession(res.accessToken, res.refreshToken, res.user);
-    },
-    [applySession],
-  );
 
   const loginWithGoogle = useCallback(
     async (idToken: string) => {
@@ -170,8 +152,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         getAccessToken,
         authFetch,
-        login,
-        register,
         loginWithGoogle,
         logout,
       }}

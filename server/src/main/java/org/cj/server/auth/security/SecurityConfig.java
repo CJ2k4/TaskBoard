@@ -8,8 +8,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
@@ -76,18 +74,6 @@ public class SecurityConfig {
             // Read the JWT and set the principal before the username/password machinery runs.
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
-    }
-
-    /**
-     * How we hash passwords. BCrypt is a deliberately <em>slow</em>, salted hash designed
-     * for passwords: each hash embeds its own random salt (so identical passwords produce
-     * different hashes) and a work factor that makes brute-forcing expensive. We never
-     * store or compare plaintext — {@code encode()} at registration, {@code matches()} at
-     * login. Exposed as a bean so the auth service can inject the same instance.
-     */
-    @Bean
-    PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
     }
 
     @Bean

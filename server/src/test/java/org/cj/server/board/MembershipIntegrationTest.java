@@ -10,13 +10,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.util.UUID;
 
+import org.cj.server.auth.entity.User;
+import org.cj.server.support.IntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -28,7 +29,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-class MembershipIntegrationTest {
+class MembershipIntegrationTest extends IntegrationTest {
 
     @Autowired
     MockMvc mvc;
@@ -36,21 +37,13 @@ class MembershipIntegrationTest {
     @Autowired
     ObjectMapper om;
 
-    /** Register a fresh user; returns [accessToken, email]. */
-    private String[] newUser() throws Exception {
-        String email = "u-" + UUID.randomUUID() + "@example.com";
-        String body = """
-                {"email":"%s","password":"hunter2secret","name":"Ada"}""".formatted(email);
-        String json = mvc.perform(post("/api/auth/register")
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
-        return new String[] {om.readTree(json).get("accessToken").asText(), email};
+    /** Create a fresh user directly; returns [accessToken, email]. */
+    private String[] newUser() {
+        String email = uniqueEmail();
+        User u = users.save(User.createOAuth(email, "Ada", null));
+        return new String[] {tokenFor(u), email};
     }
 
-    private MockHttpServletRequestBuilder auth(MockHttpServletRequestBuilder b, String token) {
-        return b.header("Authorization", "Bearer " + token);
-    }
 
     private String createBoard(String token) throws Exception {
         return om.readTree(mvc.perform(auth(post("/api/boards"), token)

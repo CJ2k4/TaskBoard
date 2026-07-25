@@ -45,6 +45,12 @@ public class JwtService {
     static final String TYPE_ACCESS = "access";
     static final String TYPE_REFRESH = "refresh";
 
+    /**
+     * The insecure default from {@code application.properties}. Fine for local dev and tests, but
+     * a fatal misconfiguration in production — anyone with the repo could forge tokens with it.
+     */
+    static final String INSECURE_DEFAULT_SECRET = "dev-only-insecure-secret-change-me-in-prod-0123456789";
+
     private final SecretKey key;
     private final Duration accessTtl;
     private final Duration refreshTtl;
@@ -52,7 +58,16 @@ public class JwtService {
     public JwtService(
             @Value("${app.jwt.secret}") String secret,
             @Value("${app.jwt.access-ttl}") Duration accessTtl,
-            @Value("${app.jwt.refresh-ttl}") Duration refreshTtl) {
+            @Value("${app.jwt.refresh-ttl}") Duration refreshTtl,
+            @Value("${spring.profiles.active:}") String activeProfiles) {
+        // Refuse to boot in production with the public dev secret still in place. Local dev and
+        // tests run without a "prod" profile, so they keep using the convenient default; a prod
+        // deployment (SPRING_PROFILES_ACTIVE=prod) MUST supply a real JWT_SECRET or fail fast here.
+        if (activeProfiles.contains("prod") && INSECURE_DEFAULT_SECRET.equals(secret)) {
+            throw new IllegalStateException(
+                    "app.jwt.secret is the insecure dev default in a prod profile — set JWT_SECRET "
+                            + "to a strong random value (>= 32 bytes).");
+        }
         // hmacShaKeyFor throws if the secret is shorter than 256 bits (32 bytes) — a
         // built-in guard against a too-weak signing key.
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));

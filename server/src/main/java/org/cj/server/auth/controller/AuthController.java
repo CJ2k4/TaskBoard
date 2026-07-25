@@ -1,7 +1,5 @@
 package org.cj.server.auth.controller;
 
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -10,9 +8,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import org.cj.server.auth.dto.AuthResponse;
 import org.cj.server.auth.dto.GoogleLoginRequest;
-import org.cj.server.auth.dto.LoginRequest;
 import org.cj.server.auth.dto.RefreshRequest;
-import org.cj.server.auth.dto.RegisterRequest;
 import org.cj.server.auth.entity.User;
 import org.cj.server.auth.service.AuthService;
 import org.cj.server.auth.service.JwtService;
@@ -21,12 +17,14 @@ import io.jsonwebtoken.Claims;
 import jakarta.validation.Valid;
 
 /**
- * Public auth endpoints. All three live under {@code /api/auth/**}, which
- * {@code SecurityConfig} leaves open — you can't present a token before you have one.
+ * Public auth endpoints under {@code /api/auth/**}, which {@code SecurityConfig} leaves open —
+ * you can't present a token before you have one. Sign-in is <b>Google-only</b>: password
+ * register/login was removed, so the only ways to obtain tokens are exchanging a Google ID token
+ * ({@code /google}) or rotating an existing refresh token ({@code /refresh}).
  *
- * <p>Each returns the same {@link AuthResponse} (user + fresh token pair). The controller
- * stays thin: validate input (via {@code @Valid}), delegate to {@link AuthService} /
- * {@link JwtService}, shape the response.
+ * <p>Each returns the same {@link AuthResponse} (user + fresh token pair). The controller stays
+ * thin: validate input (via {@code @Valid}), delegate to {@link AuthService} / {@link JwtService},
+ * shape the response.
  */
 @RestController
 @RequestMapping("/api/auth")
@@ -40,24 +38,10 @@ public class AuthController {
         this.jwtService = jwtService;
     }
 
-    /** Create an account and log in immediately. 201 Created. */
-    @PostMapping("/register")
-    public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest req) {
-        User user = authService.register(req);
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(AuthResponse.of(user, jwtService.issueTokens(user)));
-    }
-
-    /** Verify credentials and return tokens. 200 OK (or 401 on bad credentials). */
-    @PostMapping("/login")
-    public AuthResponse login(@Valid @RequestBody LoginRequest req) {
-        User user = authService.authenticate(req);
-        return AuthResponse.of(user, jwtService.issueTokens(user));
-    }
-
     /**
      * Sign in with Google: verify the ID token, find-or-create the account by verified email,
-     * and return the same token pair as password login. 200 OK (or 401 on an invalid token).
+     * and return a token pair. 200 OK (or 401 on an invalid token). This is the only sign-in
+     * path — there is no password login.
      */
     @PostMapping("/google")
     public AuthResponse google(@Valid @RequestBody GoogleLoginRequest req) {

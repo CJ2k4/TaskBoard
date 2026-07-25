@@ -65,18 +65,10 @@ public class User {
     }
 
     /**
-     * Factory for a brand-new email/password user. Generates the id and stamps
-     * {@code createdAt} now, so callers can't forget either. The caller is
-     * responsible for passing an already-lowercased email and an already-hashed
-     * password (the entity never sees plaintext).
-     */
-    public static User create(String email, String passwordHash, String name) {
-        return new User(UUID.randomUUID(), email, passwordHash, name, null, Instant.now());
-    }
-
-    /**
-     * Factory for an OAuth-only account (e.g. Google): no password, but an avatar URL from the
-     * provider. The caller passes an already-lowercased email.
+     * Factory for an OAuth-only account (Google): no password, but an avatar URL from the
+     * provider. The caller passes an already-lowercased email. This is the only way accounts are
+     * created — sign-in is Google-only. ({@code passwordHash} stays on the entity for the DB
+     * column and any legacy rows, but is never written for new accounts.)
      */
     public static User createOAuth(String email, String name, String imageUrl) {
         return new User(UUID.randomUUID(), email, null, name, imageUrl, Instant.now());

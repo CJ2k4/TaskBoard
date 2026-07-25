@@ -12,6 +12,9 @@ import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+
+import org.cj.server.auth.entity.User;
+import org.cj.server.support.IntegrationTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -37,7 +40,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-class RoleEnforcementIntegrationTest {
+class RoleEnforcementIntegrationTest extends IntegrationTest {
 
     @Autowired
     MockMvc mvc;
@@ -54,16 +57,10 @@ class RoleEnforcementIntegrationTest {
     private record SharedBoard(String id, TestUser owner, TestUser editor, TestUser viewer,
                                String columnId, String cardId, String emptyColumnId) {}
 
-    private TestUser newUser() throws Exception {
-        String email = "u-" + UUID.randomUUID() + "@example.com";
-        String json = mvc.perform(post("/api/auth/register")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"email":"%s","password":"hunter2secret","name":"Ada"}"""
-                                .formatted(email)))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
-        return new TestUser(om.readTree(json).get("accessToken").asText(), email);
+    private TestUser newUser() {
+        String email = uniqueEmail();
+        User u = users.save(User.createOAuth(email, "Ada", null));
+        return new TestUser(tokenFor(u), email);
     }
 
     private MockHttpServletRequestBuilder auth(MockHttpServletRequestBuilder b, TestUser user) {

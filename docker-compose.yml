@@ -16,10 +16,13 @@ services:
       timeout: 5s
       retries: 5
 
-  # Optional: uncomment to get a web UI for the DB at http://localhost:5050
+  # Dev-only DB web UI at http://localhost:5050. Gated behind the "dev" profile so a plain
+  # `docker compose up` never starts it — start it explicitly with `docker compose --profile dev up`.
+  # It must NEVER run in production: it's a full DB admin console with static default credentials.
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: taskboard-pgadmin
+    profiles: ["dev"]
     environment:
       # NB: pgAdmin4's email validator rejects the reserved ".local" TLD (container Exits 1 on
       # boot), so use a normal TLD here. Password must be at least 6 chars.
