@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 
 import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { avatarColor, initials } from "@/lib/avatar";
 import type { Role } from "@/lib/boards";
 import {
   changeMemberRole,
@@ -57,10 +58,24 @@ export function ShareModal({
   }, [authFetch, boardId]);
 
   // Loads on open, and again whenever `refreshSignal` changes — a live membership change
-  // elsewhere. `load` is stable, so this is one refetch per signal, no churn.
+  // elsewhere. The fetch is inlined rather than calling `load()` so nothing sets state
+  // synchronously in the effect body; `status` already starts as "loading", and a refetch keeps
+  // the current roster on screen instead of flashing the spinner. One refetch per signal.
   useEffect(() => {
-    load();
-  }, [load, refreshSignal]);
+    let cancelled = false;
+    listMembers(authFetch, boardId)
+      .then((rows) => {
+        if (cancelled) return;
+        setMembers(rows);
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authFetch, boardId, refreshSignal]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -86,19 +101,22 @@ export function ShareModal({
 
   return createPortal(
     <div
-      className="animate-fade-in fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-24"
+      className="animate-fade-in fixed inset-0 z-50 flex items-start justify-center bg-zinc-900/40 p-4 pt-24 backdrop-blur-[3px]"
       onClick={onClose}
     >
       <div
-        className="animate-pop-in w-full max-w-lg rounded-xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-800 dark:bg-zinc-950"
+        className="animate-spring-in w-full max-w-lg rounded-2xl border border-line bg-paper p-6 shadow-[var(--shadow-xl)]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-start justify-between gap-4">
+        <div className="mb-5 flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
+            <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900">
+              <span aria-hidden className="text-brand-500">
+                ↗
+              </span>
               Share this board
             </h2>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            <p className="mt-0.5 text-xs text-zinc-500">
               {isOwner
                 ? "Invite people by email and choose what they can do."
                 : "People with access to this board."}
@@ -107,7 +125,7 @@ export function ShareModal({
           <button
             type="button"
             onClick={onClose}
-            className="text-sm text-zinc-500 transition hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            className="rounded-lg p-1.5 text-sm text-zinc-500 transition-all duration-200 hover:rotate-90 hover:bg-sunken hover:text-zinc-900"
             aria-label="Close"
           >
             ✕
@@ -119,18 +137,28 @@ export function ShareModal({
         {isOwner && <InviteLinkSection boardId={boardId} />}
 
         {status === "loading" && (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading members…</p>
+          <div className="flex flex-col gap-3" aria-label="Loading members">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="flex items-center justify-between gap-3 py-1">
+                <div className="flex-1">
+                  <div className="skeleton h-3.5 w-1/3 rounded" />
+                  <div className="skeleton mt-1.5 h-3 w-1/2 rounded" />
+                </div>
+                <div className="skeleton h-6 w-16 rounded-full" />
+              </div>
+            ))}
+          </div>
         )}
         {status === "error" && (
-          <p className="text-sm text-red-600 dark:text-red-400">
+          <p className="animate-pop-in rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
             Couldn&apos;t load the member list.{" "}
-            <button onClick={load} className="underline">
+            <button onClick={load} className="font-semibold underline underline-offset-2">
               Retry
             </button>
           </p>
         )}
         {status === "ready" && (
-          <ul className="flex flex-col divide-y divide-zinc-200 dark:divide-zinc-800">
+          <ul className="stagger flex flex-col divide-y divide-line">
             {members.map((member) => (
               <MemberRow
                 key={member.id}
@@ -203,12 +231,12 @@ function InviteForm({
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="name@example.com"
-          className="flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          className="flex-1 rounded-lg border border-line-strong bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition-shadow duration-200 focus:border-brand-400 focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
         />
         <select
           value={role}
           onChange={(e) => setRole(e.target.value as InvitableRole)}
-          className="rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          className="cursor-pointer rounded-lg border border-line-strong bg-white px-2 py-2 text-sm text-zinc-900 outline-none transition-shadow duration-200 focus:border-brand-400 focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
           aria-label="Role"
         >
           <option value="EDITOR">Editor</option>
@@ -217,17 +245,21 @@ function InviteForm({
         <button
           type="submit"
           disabled={busy || email.trim() === ""}
-          className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          className="press rounded-lg bg-gradient-to-br from-brand-500 to-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-[var(--shadow-brand)] disabled:opacity-50 disabled:shadow-none"
         >
           {busy ? "Inviting…" : "Invite"}
         </button>
       </div>
       {error && (
-        <p className="text-xs text-red-600 dark:text-red-400" role="alert">
+        <p className="animate-pop-in text-xs text-red-600" role="alert">
           {error}
         </p>
       )}
-      {note && <p className="text-xs text-zinc-500 dark:text-zinc-400">{note}</p>}
+      {note && (
+        <p className="animate-pop-in rounded-lg bg-brand-50 px-2.5 py-1.5 text-xs text-brand-800">
+          {note}
+        </p>
+      )}
     </form>
   );
 }
@@ -294,29 +326,31 @@ function InviteLinkSection({ boardId }: { boardId: string }) {
   }
 
   return (
-    <div className="mb-5 border-t border-zinc-200 pt-4 dark:border-zinc-800">
-      <p className="mb-2 text-xs font-medium text-zinc-700 dark:text-zinc-300">
-        Or share a link
-      </p>
+    <div className="mb-5 border-t border-line pt-4">
+      <p className="mb-2 text-xs font-semibold text-zinc-700">Or share a link</p>
 
       {url ? (
-        <div className="flex flex-col gap-2">
+        <div className="animate-pop-in flex flex-col gap-2">
           <div className="flex gap-2">
             <input
               readOnly
               value={url}
               onFocus={(e) => e.target.select()}
-              className="flex-1 rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 text-xs text-zinc-700 outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+              className="flex-1 rounded-lg border border-line-strong bg-canvas px-3 py-2 font-mono text-xs text-zinc-700 outline-none transition-colors focus:border-brand-400"
             />
             <button
               type="button"
               onClick={copy}
-              className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              className={`press w-24 rounded-lg px-3 py-2 text-sm font-semibold text-white shadow-[var(--shadow-sm)] ${
+                copied
+                  ? "bg-emerald-600"
+                  : "bg-gradient-to-br from-brand-500 to-violet-600 shadow-[var(--shadow-brand)]"
+              }`}
             >
-              {copied ? "Copied" : "Copy"}
+              {copied ? "✓ Copied" : "Copy"}
             </button>
           </div>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          <p className="text-xs text-zinc-500">
             Anyone who signs in with this link joins as{" "}
             <span className="font-medium">{(link!.role ?? "").toLowerCase()}</span>.{" "}
             <button
@@ -343,7 +377,7 @@ function InviteLinkSection({ boardId }: { boardId: string }) {
           <select
             value={role}
             onChange={(e) => setRole(e.target.value as InvitableRole)}
-            className="rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            className="cursor-pointer rounded-lg border border-line-strong bg-white px-2 py-2 text-sm text-zinc-900 outline-none transition-shadow duration-200 focus:border-brand-400 focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
             aria-label="Link role"
           >
             <option value="EDITOR">Editor</option>
@@ -353,14 +387,14 @@ function InviteLinkSection({ boardId }: { boardId: string }) {
             type="button"
             onClick={create}
             disabled={busy}
-            className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            className="press rounded-lg border border-line-strong px-3 py-2 text-sm font-medium text-zinc-700 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-50"
           >
             {busy ? "Creating…" : "Create link"}
           </button>
         </div>
       )}
       {error && (
-        <p className="mt-1 text-xs text-red-600 dark:text-red-400" role="alert">
+        <p className="animate-pop-in mt-1 text-xs text-red-600" role="alert">
           {error}
         </p>
       )}
@@ -398,20 +432,35 @@ function MemberRow({
   }
 
   return (
-    <li className="flex items-center justify-between gap-3 py-3">
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
-          {member.name ?? member.invitedEmail ?? member.email}
-          {pending && (
-            <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-950 dark:text-amber-400">
-              Pending
-            </span>
-          )}
-        </p>
-        <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-          {pending ? "Hasn't signed up yet" : member.email}
-        </p>
-        {error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
+    <li className="group/member -mx-2 flex items-center justify-between gap-3 rounded-lg px-2 py-3 transition-colors duration-200 hover:bg-canvas">
+      <div className="flex min-w-0 items-center gap-3">
+        <span
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white ring-2 ring-paper transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/member:scale-110 ${
+            pending ? "bg-zinc-300" : ""
+          }`}
+          style={
+            pending || !member.userId
+              ? undefined
+              : { backgroundColor: avatarColor(member.userId) }
+          }
+          aria-hidden
+        >
+          {pending ? "?" : initials(member.name ?? member.email ?? "?")}
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-zinc-900">
+            {member.name ?? member.invitedEmail ?? member.email}
+            {pending && (
+              <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                Pending
+              </span>
+            )}
+          </p>
+          <p className="truncate text-xs text-zinc-500">
+            {pending ? "Hasn't signed up yet" : member.email}
+          </p>
+          {error && <p className="animate-pop-in mt-1 text-xs text-red-600">{error}</p>}
+        </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
@@ -419,7 +468,7 @@ function MemberRow({
           <select
             value={member.role}
             onChange={(e) => changeRole(e.target.value as InvitableRole)}
-            className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            className="cursor-pointer rounded-lg border border-line-strong bg-white px-2 py-1 text-xs text-zinc-900 outline-none transition-shadow duration-200 focus:border-brand-400 focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
             aria-label={`Role for ${member.name ?? member.invitedEmail}`}
           >
             <option value="EDITOR">Editor</option>
@@ -436,11 +485,22 @@ function MemberRow({
   );
 }
 
-/** A small, non-interactive role label — used where the role can't be changed. */
+/**
+ * A small, non-interactive role label — used where the role can't be changed. Each role gets its
+ * own tint so "what am I allowed to do here?" is answerable at a glance, without reading.
+ */
+const ROLE_TINT: Record<Role, string> = {
+  OWNER: "border-brand-200 bg-brand-50 text-brand-700",
+  EDITOR: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  VIEWER: "border-zinc-200 bg-zinc-100 text-zinc-600",
+};
+
 export function RoleBadge({ role }: { role: Role }) {
   const label = role.charAt(0) + role.slice(1).toLowerCase();
   return (
-    <span className="rounded-full border border-zinc-300 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+    <span
+      className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${ROLE_TINT[role] ?? ROLE_TINT.VIEWER}`}
+    >
       {label}
     </span>
   );

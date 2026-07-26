@@ -37,7 +37,12 @@ export function GoogleSignInButton({
   const containerRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
   const onCredentialRef = useRef(onCredential);
-  onCredentialRef.current = onCredential;
+  // Keep the ref pointing at the latest callback without re-initializing GIS. The write happens
+  // in an effect rather than during render so rendering stays free of side effects; GIS only
+  // invokes it on user interaction, long after this has run.
+  useEffect(() => {
+    onCredentialRef.current = onCredential;
+  }, [onCredential]);
 
   const render = useCallback(() => {
     if (!CLIENT_ID || !window.google || !containerRef.current) return;

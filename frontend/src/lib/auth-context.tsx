@@ -77,18 +77,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Bootstrap once on mount: try to restore a session from the stored refresh token.
+  // Exchange it for a fresh pair — the backend rotates the refresh token, so we save the new one
+  // that comes back. Having nothing stored resolves to null and lands in the same place as a
+  // failed refresh (expired/invalid/tampered): logged out. Routing both paths through the promise
+  // is what keeps the effect body itself free of synchronous state updates.
   useEffect(() => {
+    let cancelled = false;
     const stored = localStorage.getItem(REFRESH_KEY);
-    if (!stored) {
-      setStatus("unauthenticated");
-      return;
-    }
-    // Exchange the stored refresh token for a fresh pair. The backend rotates the
-    // refresh token, so we save the new one that comes back.
-    authApi
-      .refresh(stored)
-      .then((res) => applySession(res.accessToken, res.refreshToken, res.user))
-      .catch(() => clearSession()); // expired/invalid/tampered → treat as logged out
+    Promise.resolve(stored ? authApi.refresh(stored) : null)
+      .then((res) => {
+        if (cancelled) return;
+        if (res) applySession(res.accessToken, res.refreshToken, res.user);
+        else clearSession();
+      })
+      .catch(() => {
+        if (!cancelled) clearSession();
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [applySession, clearSession]);
 
   const loginWithGoogle = useCallback(
