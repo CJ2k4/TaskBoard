@@ -1,0 +1,15 @@
+# The image builds the jar itself; copying a host-built target/ in would bloat the build
+# context and risk shipping a stale jar that never went through the build stage.
+target/
+
+# Not used inside the image — the build stage uses the Maven that ships in the base image.
+# (Both stay in the repo for local and CI use.)
+.mvn/
+mvnw
+mvnw.cmd
+
+.idea/
+*.iml
+.DS_Store
+HELP.md
+.gitignore

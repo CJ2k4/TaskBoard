@@ -1,13 +1,14 @@
 /**
  * Browser-side client for the Spring backend's auth API.
  *
- * Unlike `health.ts` (which runs server-side during render), these calls run in the
- * browser: the JWT lives in client memory, so the component that holds it is the one
- * that must make the request. That's why the URL comes from `NEXT_PUBLIC_API_URL`
- * (shipped to the client) rather than the server-only `API_BASE_URL`.
+ * Every call here runs in the browser: the JWT lives in client memory, so the component
+ * that holds it is the one that must make the request. That's why the URL comes from
+ * `NEXT_PUBLIC_API_URL` — a build-time substitution that ships to the client bundle, not a
+ * runtime lookup, so changing it requires a rebuild rather than a restart.
  *
- * The backend already allows this cross-origin call — CORS is configured for
- * http://localhost:3000 in `auth/security/SecurityConfig.java`.
+ * The backend must allow this cross-origin call: its `app.cors.allowed-origins` (read by
+ * `auth/security/SecurityConfig.java`) has to name this app's exact origin — localhost:3000
+ * in dev, the deployed URL in production.
  */
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;

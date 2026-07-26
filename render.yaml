@@ -1,0 +1,73 @@
+# Render Blueprint — the deployed shape of TaskBoard, as code.
+# Deploy with: Render Dashboard → New → Blueprint → pick this repo.
+# Values marked `sync: false` are NOT stored here; Render prompts for them once and keeps
+# them in its own encrypted store, so no secret ever lands in git.
+
+services:
+  - type: web
+    name: taskboard-api
+    runtime: docker
+    plan: free
+    # The web service and the database MUST be in the same region — that is what makes the
+    # database's private hostname resolvable and keeps DB traffic off the public internet.
+    # Singapore is the closest region to the users; it matters more than usual here because
+    # the app holds a persistent WebSocket rather than just answering requests.
+    region: singapore
+    branch: main
+    # No CD: deploys are a deliberate button press, not a side effect of pushing.
+    autoDeploy: false
+    dockerfilePath: ./server/Dockerfile
+    # Build context is server/ only, so the frontend never enters the image build.
+    dockerContext: ./server
+    # Shallow liveness ping. Deliberately does not touch the database: this service is
+    # single-instance and holds all realtime state in-JVM, so a DB-checking probe would turn
+    # a brief Postgres hiccup into a restart that drops every open board's socket. Flyway
+    # already proves the database at startup. See common/controller/HealthController.
+    healthCheckPath: /api/health
+    # !! DO NOT RAISE ABOVE 1 !!
+    # This backend is single-instance by construction: the STOMP broker is Spring's in-JVM
+    # simple broker, PresenceTracker holds per-process maps, and BinPurgeJob's @Scheduled
+    # purge has no leader election. A second instance splits every board's live feed in two
+    # and double-runs the purge. Scaling out requires an external broker relay + shared
+    # presence + job locking first, in that order.
+    # (numInstances is not configurable on the free plan; uncomment on a paid one.)
+    # numInstances: 1
+    envVars:
+      # Not a config file — a signal. JwtService refuses to boot with the committed dev
+      # secret when a "prod" profile is active, so this is what arms that guard.
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      # Render exposes the database as discrete fields, not a JDBC URL, and this file cannot
+      # concatenate strings — which is why application.properties composes the URL from parts.
+      - key: DB_HOST
+        fromDatabase: { name: taskboard-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: taskboard-db, property: port }
+      - key: DB_NAME
+        fromDatabase: { name: taskboard-db, property: database }
+      - key: DB_USERNAME
+        fromDatabase: { name: taskboard-db, property: user }
+      - key: DB_PASSWORD
+        fromDatabase: { name: taskboard-db, property: password }
+      # Generate with: openssl rand -base64 48   (jjwt rejects anything under 32 bytes)
+      - key: JWT_SECRET
+        sync: false
+      # Public, but environment-specific. Must be the SAME client id the frontend uses.
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      # The deployed frontend origin(s), comma-separated, no trailing slash. Set to the
+      # Vercel production URL after the first frontend deploy — see the runbook in README.md.
+      - key: APP_CORS_ALLOWED_ORIGINS
+        sync: false
+
+databases:
+  - name: taskboard-db
+    plan: free
+    # Must match the web service's region — see the note there.
+    region: singapore
+    databaseName: taskboard
+    user: taskboard
+    postgresMajorVersion: "16"   # matches docker-compose.yml
+    # No external access: the only client is the web service, over the private network.
+    # To connect with psql from a laptop, add your IP here (and use ?sslmode=require).
+    ipAllowList: []

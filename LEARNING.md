@@ -2609,6 +2609,104 @@ construction, would have broken every fresh clone and every future deploy, and w
 ninety seconds of switching CI on. A green badge means "this builds on a machine that has never seen
 your `node_modules`", which is a much stronger claim than "it works here".
 
+### Step P.4 — Shipping it: one Dockerfile, two platforms, and a three-way chicken-and-egg · _2026-07-26_
+
+CI proved the app **builds** on a machine that isn't your laptop. Deploying proves it **runs** on
+one — and that turns out to surface a completely different class of assumption. Nothing about how
+TaskBoard works changed in this step. What changed is which assumptions were still allowed to stay
+implicit.
+
+**Why the backend needs a Dockerfile at all.** Render has no native Java runtime, so the unit of
+deployment isn't "a jar" — it's an image. Three decisions inside it, each with a reason:
+
+1. **Two stages.** The JDK is a *build* tool. Once the jar exists, the compiler, `javadoc` and
+   friends are dead weight and extra attack surface, so the runtime stage starts from
+   `eclipse-temurin:21-jre-alpine` and copies only the jar across.
+2. **`COPY pom.xml` before `COPY src`.** Docker caches per layer and invalidates everything below the
+   first line whose inputs changed. Dependencies resolved in their own layer means an ordinary code
+   edit doesn't re-download the world on every deploy.
+3. **`-DskipTests`, on purpose.** Sixteen of the nineteen test classes are `@SpringBootTest` and need
+   a live Postgres — that's the whole reason CI declares a `services.postgres` container. There is no
+   database inside an image build, and there shouldn't be. The honest division of labour is: **CI
+   proves correctness, the image build produces an artifact.**
+
+**A detour worth telling.** The obvious build stage is `FROM eclipse-temurin:21-jdk` + `./mvnw
+package`, and it fails. `maven-wrapper.properties` says `distributionType=only-script` and the
+wrapper jar is gitignored, so `mvnw` *downloads and unzips a Maven distribution at build time* — it
+needs `curl` and `unzip`, which that base image doesn't reliably ship. The fix is to start from
+`maven:3.9-eclipse-temurin-21`, which already has both. The general lesson: **the wrapper is a
+bootstrapper, not a Maven.** It guarantees everyone uses the same Maven; it does not mean Maven is
+present.
+
+**`PORT` is not `SERVER_PORT`.** Render, like most platforms, tells the app which port to bind by
+injecting `$PORT`. Spring's relaxed binding maps the env var `SERVER_PORT` onto the property
+`server.port` — but a bare `PORT` is not a Spring property name at all, so it is silently ignored.
+The app binds 8080, the platform routes to something else, and the health check times out **with a
+completely clean startup log**. One line fixes it:
+
+```properties
+server.port=${PORT:8080}
+server.forward-headers-strategy=framework
+```
+
+And the reason that's one line rather than a new `application-prod.properties` is the config
+philosophy the project already had: a default that's right locally, an env var that wins in
+production. `${PORT:8080}` keeps `./mvnw spring-boot:run` byte-for-byte unchanged. (The second line
+is the sibling assumption: behind a TLS-terminating proxy, the app receives plain http and only
+learns the truth from `X-Forwarded-Proto`.)
+
+**The genuinely interesting part: a three-way cycle.** Deploying two apps that talk to each other
+looks circular:
+
+- the backend's CORS allow-list needs the **frontend's** origin,
+- the frontend needs the **backend's** origin,
+- and Google Sign-In needs the **frontend's** origin registered before a single login can succeed.
+
+It resolves because the three aren't symmetric. The backend re-reads `APP_CORS_ALLOWED_ORIGINS` on a
+**restart**; Google's console is a **runtime** setting too. But `NEXT_PUBLIC_API_URL` is a
+**compile-time substitution** — Next.js literally pastes the string into the bundle during
+`next build`, which is why changing it needs a rebuild and not a restart. Exactly one of the three is
+build-time, so exactly one ordering works: backend with a placeholder → frontend for real → backend's
+CORS updated by restart → Google's origin last.
+
+Then the sting. The natural instinct is to wildcard the CORS origin so Vercel preview deployments
+work: `https://taskboard-*.vercel.app`. It's pointless here — Google's *Authorized JavaScript
+origins* **accepts no wildcards**, so a preview on a fresh hostname fails with `origin_mismatch` no
+matter how permissive the backend is. A wildcard would buy a working landing page, a broken login,
+and a wider credentialed-CORS surface. Previews stay signed-out; that's the honest state.
+
+**A constraint that finally got written down.** `render.yaml` carries a `# !! DO NOT RAISE ABOVE 1 !!`
+comment, because **three unrelated design choices each independently forbid a second instance**: the
+STOMP broker is Spring's in-JVM simple broker (instance A's broadcast never reaches instance B's
+subscribers), `PresenceTracker` is per-process `ConcurrentHashMap`s, and `BinPurgeJob`'s `@Scheduled`
+purge has no leader election. None of them *look* like scaling decisions from inside their own file —
+which is exactly why the ceiling belongs in the deployment config, next to the number it constrains.
+
+The same instinct explains what was **not** changed: `/api/health` still returns `{"status":"ok"}`
+without touching the database. A deeper probe sounds strictly better until you notice Render restarts
+instances that fail it — turning a thirty-second Postgres hiccup into a restart that drops every open
+board's WebSocket. Flyway already proves the database at startup; the probe's job is only to answer
+"is this process alive?".
+
+```bash
+# the local smoke test that catches the port bug before Render does
+cd server
+docker build -t taskboard-api .
+docker run --rm -p 8081:8081 -e PORT=8081 \
+  -e DB_HOST=host.docker.internal -e DB_PORT=5432 -e DB_NAME=taskboard \
+  -e DB_USERNAME=taskboard -e DB_PASSWORD=taskboard taskboard-api
+curl localhost:8081/api/health
+
+# after deploying — does CORS actually admit the real frontend origin?
+curl -i -H "Origin: https://<your-app>.vercel.app" \
+  https://taskboard-api.onrender.com/api/health
+```
+
+The lesson worth keeping: **deploying didn't change how the app works — it changed which assumptions
+were allowed to stay implicit.** "It listens on 8080", "the frontend is at localhost:3000", "there's
+one of me" were all true, all load-bearing, and all invisible until a platform disagreed. Config
+that's env-driven from day one is what turns each of those from a rewrite into a line.
+
 ---
 
 ## Quick command reference
@@ -2638,4 +2736,12 @@ npm ci                                  # clean install, exactly as CI does (str
 gh run list --limit 5                   # recent workflow runs and their status
 gh run watch                            # follow the run in progress
 gh run view --log-failed                # just the failing steps' logs
+
+# Deploy (see README.md for the full runbook)
+docker build -t taskboard-api server/   # build the backend image locally
+docker run --rm -p 8081:8081 -e PORT=8081 \
+  -e DB_HOST=host.docker.internal -e DB_PORT=5432 -e DB_NAME=taskboard \
+  -e DB_USERNAME=taskboard -e DB_PASSWORD=taskboard taskboard-api
+curl https://taskboard-api.onrender.com/api/health   # is the deployed backend up?
+# Deploys themselves are triggered from the Render and Vercel dashboards — there is no CD.
 ```
