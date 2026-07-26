@@ -8,6 +8,7 @@ import { ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { acceptInviteLink } from "@/lib/members";
 import { Protected } from "@/components/protected";
+import { PageNote } from "@/components/page-note";
 
 /**
  * The invite-link landing page (M6): `/join/{token}`. Wrapped in `<Protected>`, so a signed-out
@@ -43,32 +44,20 @@ function JoinContent() {
   }, [authFetch, token, router]);
 
   if (state === "joining") {
-    return <CenteredNote>Joining board…</CenteredNote>;
+    return <PageNote busy>Joining board…</PageNote>;
   }
   if (state === "invalid") {
     return (
-      <CenteredNote>
+      <PageNote>
         This invite link is no longer valid.{" "}
-        <Link href="/dashboard" className="underline">
-          Go to your boards
-        </Link>
-      </CenteredNote>
+        <Link href="/dashboard">Go to your boards</Link>
+      </PageNote>
     );
   }
   return (
-    <CenteredNote>
+    <PageNote>
       Something went wrong joining this board.{" "}
-      <Link href="/dashboard" className="underline">
-        Back to your boards
-      </Link>
-    </CenteredNote>
-  );
-}
-
-function CenteredNote({ children }: { children: React.ReactNode }) {
-  return (
-    <main className="flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">{children}</p>
-    </main>
+      <Link href="/dashboard">Back to your boards</Link>
+    </PageNote>
   );
 }

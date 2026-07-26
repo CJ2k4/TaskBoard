@@ -16,6 +16,7 @@ import { usePathname, useRouter } from "next/navigation";
 
 import { useAuth } from "@/lib/auth-context";
 import { withNext } from "@/lib/next-url";
+import { PageNote } from "@/components/page-note";
 
 export function Protected({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
@@ -35,9 +36,5 @@ export function Protected({ children }: { children: React.ReactNode }) {
   }
 
   // 'loading', or 'unauthenticated' during the brief moment before the redirect fires.
-  return (
-    <main className="flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
-    </main>
-  );
+  return <PageNote busy>Signing you in…</PageNote>;
 }

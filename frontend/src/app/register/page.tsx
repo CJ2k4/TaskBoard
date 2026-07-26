@@ -4,6 +4,7 @@ import { Suspense, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { withNext } from "@/lib/next-url";
+import { PageNote } from "@/components/page-note";
 
 /**
  * There's no separate sign-up anymore — Google sign-in auto-creates the account on first use.
@@ -30,9 +31,5 @@ function RegisterRedirect() {
 }
 
 function RedirectShell() {
-  return (
-    <main className="flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">Redirecting…</p>
-    </main>
-  );
+  return <PageNote busy>Redirecting to sign in…</PageNote>;
 }

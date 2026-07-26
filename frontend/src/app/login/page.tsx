@@ -44,12 +44,15 @@ function LoginForm() {
   }
 
   return (
-    <main className="flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
-      <div className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+    <AuthBackdrop>
+      <div className="animate-spring-in w-full max-w-sm rounded-2xl border border-line bg-paper p-8 shadow-[var(--shadow-lg)]">
+        <span className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-violet-600 text-lg font-bold text-white shadow-[var(--shadow-brand)]">
+          T
+        </span>
+        <h1 className="text-center text-xl font-bold tracking-tight text-zinc-900">
           Sign in to TaskBoard
         </h1>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="mt-1 text-center text-sm text-zinc-500">
           Continue with your Google account.
         </p>
 
@@ -58,11 +61,30 @@ function LoginForm() {
         </div>
 
         {error && (
-          <p className="mt-4 text-center text-sm text-red-600 dark:text-red-400" role="alert">
+          <p className="animate-pop-in mt-4 rounded-lg bg-red-50 px-3 py-2 text-center text-sm text-red-700" role="alert">
             {error}
           </p>
         )}
       </div>
+    </AuthBackdrop>
+  );
+}
+
+/**
+ * The shared frame behind every auth screen: the landing page's ambient colour fields, so
+ * arriving from `/` doesn't feel like landing in a different product.
+ */
+export function AuthBackdrop({ children }: { children: React.ReactNode }) {
+  return (
+    <main className="relative flex flex-1 items-center justify-center overflow-hidden bg-canvas p-8">
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="animate-float-slow absolute -left-32 -top-32 h-[26rem] w-[26rem] rounded-full bg-brand-300/25 blur-3xl" />
+        <div
+          className="animate-float-slow absolute -bottom-32 -right-24 h-[24rem] w-[24rem] rounded-full bg-violet-300/20 blur-3xl"
+          style={{ animationDelay: "-6s" }}
+        />
+      </div>
+      <div className="relative w-full max-w-sm">{children}</div>
     </main>
   );
 }
@@ -70,8 +92,13 @@ function LoginForm() {
 /** The page frame shown while the client-side form (which reads the URL) hydrates. */
 function AuthShell() {
   return (
-    <main className="flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
-    </main>
+    <AuthBackdrop>
+      <div className="animate-fade-in rounded-2xl border border-line bg-paper p-8">
+        <div className="skeleton mx-auto h-12 w-12 rounded-2xl" />
+        <div className="skeleton mx-auto mt-5 h-5 w-2/3 rounded" />
+        <div className="skeleton mx-auto mt-2 h-3 w-1/2 rounded" />
+        <div className="skeleton mt-6 h-10 w-full rounded-lg" />
+      </div>
+    </AuthBackdrop>
   );
 }

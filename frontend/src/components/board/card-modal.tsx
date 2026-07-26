@@ -97,21 +97,21 @@ export function CardModal({
 
   return createPortal(
     <div
-      className="animate-fade-in fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-24"
+      className="animate-fade-in fixed inset-0 z-50 flex items-start justify-center bg-zinc-900/40 p-4 pt-24 backdrop-blur-[3px]"
       onClick={onClose}
     >
       <div
-        className="animate-pop-in w-full max-w-lg rounded-2xl border border-zinc-200 bg-white p-6 shadow-xl"
+        className="animate-spring-in w-full max-w-lg overflow-hidden rounded-2xl border border-line bg-paper p-6 shadow-[var(--shadow-xl)]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Chips + close. The status chip is the card's column; the label chip shows only when set. */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-md bg-zinc-100 px-2 py-1 font-mono text-xs font-medium tracking-wide text-zinc-600">
+            <span className="rounded-md bg-sunken px-2 py-1 font-mono text-xs font-medium tracking-wide text-zinc-600">
               {columnTitle}
             </span>
             {label.trim() !== "" && (
-              <span className="rounded-md bg-indigo-50 px-2 py-1 font-mono text-xs font-semibold uppercase tracking-wide text-indigo-600">
+              <span className="animate-pop-in rounded-md bg-brand-50 px-2 py-1 font-mono text-xs font-semibold uppercase tracking-wide text-brand-700 ring-1 ring-inset ring-brand-100">
                 {label.trim()}
               </span>
             )}
@@ -120,7 +120,7 @@ export function CardModal({
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="-mr-1 -mt-1 rounded-md p-1 text-xl leading-none text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700"
+            className="-mr-1 -mt-1 rounded-lg p-1 text-xl leading-none text-zinc-400 transition-all duration-200 hover:rotate-90 hover:bg-sunken hover:text-zinc-800"
           >
             ×
           </button>
@@ -128,9 +128,12 @@ export function CardModal({
 
         {conflict && (
           <p
-            className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+            className="animate-pop-in mt-4 flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800"
             role="alert"
           >
+            <span aria-hidden className="mt-px">
+              ⚠
+            </span>
             {conflict === "deleted"
               ? "Someone else deleted this card. Your changes can no longer be saved."
               : "Someone else changed this card. Saving will overwrite their version."}
@@ -144,7 +147,7 @@ export function CardModal({
           readOnly={!canEdit}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Card title"
-          className="mt-4 w-full rounded-lg border border-transparent bg-transparent text-2xl font-bold tracking-tight text-zinc-900 outline-none focus:border-zinc-300 read-only:cursor-default"
+          className="mt-4 w-full rounded-lg border border-transparent bg-transparent px-2 -mx-2 text-2xl font-bold tracking-tight text-zinc-900 outline-none transition-colors duration-200 hover:border-line focus:border-brand-300 focus:bg-white read-only:cursor-default read-only:hover:border-transparent"
         />
 
         {/* Label */}
@@ -156,7 +159,7 @@ export function CardModal({
               onChange={(e) => setLabel(e.target.value)}
               maxLength={40}
               placeholder="e.g. Backend"
-              className="w-full max-w-xs rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-400"
+              className="w-full max-w-xs rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition-shadow duration-200 focus:border-brand-400 focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
             />
           </Section>
         )}
@@ -166,7 +169,8 @@ export function CardModal({
           <div className="flex items-center gap-3">
             {assignee ? (
               <span
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white"
+                key={assignee.userId}
+                className="animate-spring-in flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white shadow-[var(--shadow-sm)] ring-2 ring-paper"
                 style={{ backgroundColor: avatarColor(assignee.userId) }}
                 aria-hidden
               >
@@ -174,7 +178,7 @@ export function CardModal({
               </span>
             ) : (
               <span
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-xs font-semibold text-zinc-400"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sunken text-xs font-semibold text-zinc-400"
                 aria-hidden
               >
                 —
@@ -184,7 +188,7 @@ export function CardModal({
               <select
                 value={assigneeId}
                 onChange={(e) => setAssigneeId(e.target.value)}
-                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-400"
+                className="cursor-pointer rounded-lg border border-line bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition-shadow duration-200 focus:border-brand-400 focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
               >
                 <option value="">Unassigned</option>
                 {members.map((m) => (
@@ -209,17 +213,17 @@ export function CardModal({
             onChange={(e) => setDescription(e.target.value)}
             rows={5}
             placeholder={canEdit ? "Add a description…" : "No description"}
-            className="w-full resize-y rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-400 read-only:text-zinc-600"
+            className="w-full resize-y rounded-xl border border-line bg-canvas px-3 py-2 text-sm leading-relaxed text-zinc-900 outline-none transition-all duration-200 focus:border-brand-400 focus:bg-white focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)] read-only:text-zinc-600"
           />
         </Section>
 
         {error && (
-          <p className="mt-3 text-sm text-red-600" role="alert">
+          <p className="animate-pop-in mt-3 text-sm text-red-600" role="alert">
             {error}
           </p>
         )}
 
-        <div className="mt-6 flex items-center justify-between">
+        <div className="mt-6 flex items-center justify-between border-t border-line pt-4">
           {/* A card deleted out from under us can't be deleted or saved — only closed. */}
           {canEdit && conflict !== "deleted" ? (
             <InlineConfirmButton onConfirm={onDelete} label="Delete card" />
@@ -235,7 +239,7 @@ export function CardModal({
               type="button"
               onClick={onClose}
               disabled={saving}
-              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50"
+              className="press rounded-lg border border-line-strong px-3.5 py-2 text-sm font-medium text-zinc-700 hover:bg-sunken disabled:opacity-50"
             >
               {canEdit && conflict !== "deleted" ? "Cancel" : "Close"}
             </button>
@@ -244,8 +248,11 @@ export function CardModal({
                 type="button"
                 onClick={save}
                 disabled={saving}
-                className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-50"
+                className="press inline-flex items-center gap-2 rounded-lg bg-gradient-to-br from-brand-500 to-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-[var(--shadow-brand)] disabled:opacity-50 disabled:shadow-none"
               >
+                {saving && (
+                  <span className="animate-spin-slow inline-block h-3 w-3 rounded-full border-2 border-white/60 border-t-transparent" />
+                )}
                 {saving ? "Saving…" : "Save"}
               </button>
             )}
@@ -261,7 +268,8 @@ export function CardModal({
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="mt-6">
-      <p className="mb-2 font-mono text-xs font-semibold uppercase tracking-wide text-zinc-400">
+      <p className="mb-2 flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-wide text-zinc-400">
+        <span aria-hidden className="h-px w-3 bg-zinc-300" />
         {title}
       </p>
       {children}

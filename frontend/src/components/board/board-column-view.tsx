@@ -61,7 +61,8 @@ export function BoardColumnView({
 
   // A separate drop target for *cards* landing in this column, so an empty column still accepts
   // a card. Its id is namespaced (`cards:`) to stay distinct from the column's own sortable id.
-  const { setNodeRef: setDropRef } = useDroppable({
+  // `isOver` drives the drop-zone highlight — the column visibly opens up to receive the card.
+  const { setNodeRef: setDropRef, isOver } = useDroppable({
     id: `cards:${column.id}`,
     data: { type: "column-cards", columnId: column.id },
   });
@@ -111,22 +112,30 @@ export function BoardColumnView({
     }
   }
 
+  // Note on the entrance animation below: it is opacity-only on purpose. A keyframe that set
+  // `transform` would outrank dnd-kit's inline transform (animations beat inline styles) and,
+  // with `both` fill, would pin the column in place permanently — breaking column dragging.
   return (
     <div
       ref={setColumnRef}
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
-        opacity: isDragging ? 0.4 : 1,
       }}
-      className="flex w-72 shrink-0 flex-col rounded-xl border border-zinc-200 bg-zinc-100/60 p-3 dark:border-zinc-800 dark:bg-zinc-900/40"
+      className={`animate-fade-in group/col flex w-[19rem] shrink-0 flex-col rounded-2xl border bg-sunken/60 p-3 backdrop-blur-sm transition-[border-color,box-shadow,opacity,background-color] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+        isDragging
+          ? "opacity-40 border-brand-300 shadow-[var(--shadow-lg)]"
+          : isOver
+            ? "border-brand-400 bg-brand-50/50 shadow-[0_0_0_4px_rgba(99,102,241,0.1)]"
+            : "border-line hover:border-line-strong"
+      }`}
     >
-      <div className="mb-3 flex items-start justify-between gap-2">
+      <div className="mb-3 flex items-start justify-between gap-2 px-1">
         {canEdit && (
           <span
             {...attributes}
             {...listeners}
-            className="mt-0.5 cursor-grab select-none text-zinc-400 touch-none active:cursor-grabbing dark:text-zinc-500"
+            className="mt-0.5 cursor-grab select-none text-zinc-300 opacity-0 transition-all duration-200 touch-none hover:text-brand-500 active:cursor-grabbing group-hover/col:opacity-100 focus-visible:opacity-100"
             title="Drag to reorder column"
             aria-label="Drag to reorder column"
           >
@@ -134,9 +143,7 @@ export function BoardColumnView({
           </span>
         )}
         {!canEdit ? (
-          <h2 className="flex-1 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-            {column.title}
-          </h2>
+          <h2 className="flex-1 text-sm font-semibold text-zinc-800">{column.title}</h2>
         ) : editing ? (
           <input
             autoFocus
@@ -150,29 +157,39 @@ export function BoardColumnView({
                 setEditing(false);
               }
             }}
-            className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm font-semibold text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            className="animate-pop-in w-full rounded-lg border border-brand-300 bg-white px-2 py-1 text-sm font-semibold text-zinc-900 outline-none transition-shadow focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
           />
         ) : (
           <h2
-            className="cursor-text text-sm font-semibold text-zinc-800 dark:text-zinc-100"
+            className="flex-1 cursor-text rounded px-1 py-0.5 -mx-1 text-sm font-semibold text-zinc-800 transition-colors duration-200 hover:bg-paper/80 hover:text-brand-700"
             onClick={() => setEditing(true)}
             title="Click to rename"
           >
             {column.title}
           </h2>
         )}
-        {canEdit && <InlineConfirmButton onConfirm={handleDelete} />}
+
+        {/* Card count — a quiet, always-there sense of column weight. */}
+        <span className="rounded-full bg-paper px-2 py-0.5 font-mono text-[11px] font-semibold text-zinc-400 transition-colors duration-200 group-hover/col:text-zinc-600">
+          {cards.length}
+        </span>
+
+        {canEdit && (
+          <span className="opacity-0 transition-opacity duration-200 group-hover/col:opacity-100 focus-within:opacity-100">
+            <InlineConfirmButton onConfirm={handleDelete} />
+          </span>
+        )}
       </div>
 
-      {deleteError && (
-        <p className="mb-2 text-xs text-red-600 dark:text-red-400">{deleteError}</p>
-      )}
+      {deleteError && <p className="animate-pop-in mb-2 px-1 text-xs text-red-600">{deleteError}</p>}
 
-      <SortableContext
-        items={cards.map((c) => c.id)}
-        strategy={verticalListSortingStrategy}
-      >
-        <div ref={setDropRef} className="flex min-h-3 flex-col gap-2">
+      <SortableContext items={cards.map((c) => c.id)} strategy={verticalListSortingStrategy}>
+        <div
+          ref={setDropRef}
+          className={`flex flex-col gap-2 rounded-xl transition-all duration-300 ${
+            isOver ? "min-h-16 bg-brand-100/30" : "min-h-3"
+          }`}
+        >
           {cards.map((card) => (
             <SortableCard
               key={card.id}
@@ -186,12 +203,15 @@ export function BoardColumnView({
       </SortableContext>
 
       {!canEdit && cards.length === 0 && (
-        <p className="py-2 text-xs text-zinc-400 dark:text-zinc-600">No cards</p>
+        <p className="py-2 px-1 text-xs text-zinc-400">No cards</p>
       )}
 
       {canEdit &&
         (addingCardOpen ? (
-          <form onSubmit={addCard} className="animate-pop-in mt-2 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm">
+          <form
+            onSubmit={addCard}
+            className="animate-pop-in mt-2 rounded-xl border border-brand-300 bg-paper p-3 shadow-[var(--shadow-md)]"
+          >
             <input
               autoFocus
               value={newCard}
@@ -209,7 +229,7 @@ export function BoardColumnView({
               <button
                 type="submit"
                 disabled={addingCard || newCard.trim() === ""}
-                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:opacity-50"
+                className="press rounded-lg bg-gradient-to-br from-brand-500 to-violet-600 px-3 py-1.5 text-sm font-semibold text-white shadow-[var(--shadow-brand)] disabled:opacity-50 disabled:shadow-none"
               >
                 {addingCard ? "Adding…" : "Add card"}
               </button>
@@ -219,7 +239,7 @@ export function BoardColumnView({
                   setNewCard("");
                   setAddingCardOpen(false);
                 }}
-                className="text-sm font-medium text-zinc-500 transition hover:text-zinc-800"
+                className="text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900"
               >
                 Cancel
               </button>
@@ -229,9 +249,12 @@ export function BoardColumnView({
           <button
             type="button"
             onClick={() => setAddingCardOpen(true)}
-            className="mt-2 flex items-center rounded-lg px-1 py-2 text-left text-sm font-medium text-zinc-500 transition hover:text-zinc-800"
+            className="group/add mt-2 flex items-center gap-1.5 rounded-lg px-2 py-2 text-left text-sm font-medium text-zinc-500 transition-all duration-200 hover:bg-paper hover:text-brand-700"
           >
-            + Add card
+            <span className="inline-block transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/add:rotate-90">
+              +
+            </span>
+            Add card
           </button>
         ))}
     </div>

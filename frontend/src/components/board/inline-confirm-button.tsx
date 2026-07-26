@@ -39,28 +39,33 @@ export function InlineConfirmButton({
       <button
         type="button"
         onClick={() => setArmed(true)}
-        className={`text-xs font-medium text-zinc-500 transition hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400 ${className}`}
+        className={`rounded-md px-1.5 py-0.5 text-xs font-medium text-zinc-500 transition-colors duration-200 hover:bg-red-50 hover:text-red-600 ${className}`}
       >
         {label}
       </button>
     );
   }
 
+  // The armed state animates in as a unit, so the swap reads as one control changing its mind
+  // rather than two buttons blinking into existence.
   return (
-    <span className="inline-flex items-center gap-2 text-xs">
+    <span className="animate-pop-in inline-flex items-center gap-1.5 rounded-md bg-red-50 px-1.5 py-0.5 text-xs ring-1 ring-inset ring-red-200">
       <button
         type="button"
         onClick={confirm}
         disabled={busy}
-        className="font-medium text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+        className="font-semibold text-red-700 transition-colors hover:text-red-900 disabled:opacity-50"
       >
         {busy ? "Deleting…" : "Confirm?"}
       </button>
+      <span aria-hidden className="text-red-300">
+        ·
+      </span>
       <button
         type="button"
         onClick={() => setArmed(false)}
         disabled={busy}
-        className="text-zinc-500 hover:underline disabled:opacity-50 dark:text-zinc-400"
+        className="text-zinc-500 transition-colors hover:text-zinc-900 disabled:opacity-50"
       >
         Cancel
       </button>
