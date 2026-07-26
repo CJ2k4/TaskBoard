@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -8,12 +9,16 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
+  MeasuringStrategy,
   PointerSensor,
   useSensor,
   useSensors,
+  type Active,
   type CollisionDetection,
   type DragEndEvent,
+  type DragOverEvent,
   type DragStartEvent,
+  type Over,
 } from "@dnd-kit/core";
 import {
   arrayMove,
@@ -52,7 +57,13 @@ import { InlineConfirmButton } from "@/components/board/inline-confirm-button";
 import { RoleBadge, ShareModal } from "@/components/board/share-modal";
 import { PresenceStack } from "@/components/board/presence-stack";
 import { ActivityPanel } from "@/components/board/activity-panel";
-import { applyBoardEvent, type BoardEvent, type PresenceViewer } from "@/lib/board-events";
+import { BinPanel } from "@/components/board/bin-panel";
+import {
+  applyBoardEvent,
+  upsertCard,
+  type BoardEvent,
+  type PresenceViewer,
+} from "@/lib/board-events";
 import { useBoardEvents, type ConnectionState } from "@/lib/realtime";
 import { listMembers, type Membership } from "@/lib/members";
 
@@ -83,6 +94,27 @@ function columnIdOfTarget(board: BoardDetail, targetId: string): string | null {
 
 function cardsOf(board: BoardDetail, columnId: string): Card[] {
   return board.columns.find((c) => c.column.id === columnId)?.cards ?? [];
+}
+
+/**
+ * The index a card lands at in a destination column's list.
+ *
+ * Over a card, the *dragged card's own body* decides which side of it we land on: past that
+ * card's midpoint means after it, otherwise before it. Anchoring only to the hovered card (as
+ * this used to) can only ever insert *before* it — which makes the slot after the last card
+ * unreachable and pushes every drop one place higher than the user aimed. Over a column's card
+ * area (its empty space, or an empty column) there's no neighbour to compare against: append.
+ */
+function dropIndex(cards: Card[], active: Active, over: Over): number {
+  const overId = String(over.id);
+  if (isColumnCardsArea(overId)) return cards.length;
+
+  const overIndex = cards.findIndex((c) => c.id === overId);
+  if (overIndex === -1) return cards.length;
+
+  const dragged = active.rect.current.translated;
+  const pastMidpoint = dragged !== null && dragged.top > over.rect.top + over.rect.height / 2;
+  return pastMidpoint ? overIndex + 1 : overIndex;
 }
 
 /** Return a new board with one column's card list replaced. */
@@ -142,6 +174,9 @@ function BoardContent() {
   const [openCardConflict, setOpenCardConflict] = useState<"edited" | "deleted" | null>(null);
   const [sharing, setSharing] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [binOpen, setBinOpen] = useState(false);
+  // Bumped whenever a card is binned or restored (by anyone), so an open bin drawer refetches.
+  const [binNonce, setBinNonce] = useState(0);
   // Bumped on any logged live event so an open Activity panel refetches (server-rendered
   // summaries stay the single source of truth). Mirrors memberEventNonce → ShareModal.
   const [activityNonce, setActivityNonce] = useState(0);
@@ -239,6 +274,12 @@ function BoardContent() {
     // own actions show up in our own feed too (everything but PRESENCE and BOARD_DELETED is logged
     // server-side). Harmless when the panel is closed: nothing is mounted to refetch.
     if (event.type !== "BOARD_DELETED") setActivityNonce((n) => n + 1);
+
+    // Same idea for an open Bin drawer: a card binned or restored anywhere changes what's in it.
+    // Also before the echo-skip, so our own bin/restore refreshes our own drawer.
+    if (event.type === "CARD_DELETED" || event.type === "CARD_RESTORED") {
+      setBinNonce((n) => n + 1);
+    }
 
     // Our own change, echoed back. We already applied it optimistically and reconciled to the
     // server's rank; re-applying would fight an in-flight drag. (The server broadcasts to the
@@ -371,7 +412,33 @@ function BoardContent() {
     replaceColumnCards(openCard.columnId, (cards) =>
       cards.filter((c) => c.id !== openCard.id),
     );
+    setBinNonce((n) => n + 1);
     closeCard();
+  }
+
+  /**
+   * A card's bin control finished its hold. The two-second hold *is* the confirmation, so this
+   * commits straight away — the same `deleteCard` the card modal uses, since deleting is binning
+   * server-side. Nothing is destroyed either way: the card is restorable from the bin for two
+   * days, which is what makes a no-dialog delete reasonable in the first place.
+   */
+  async function handleBinCard(card: Card) {
+    // Optimistic: the card leaves immediately, which is the whole point of holding to commit.
+    replaceColumnCards(card.columnId, (cards) => cards.filter((c) => c.id !== card.id));
+    try {
+      await deleteCard(authFetch, card.id);
+      setBinNonce((n) => n + 1);
+    } catch {
+      // Put it back — the hold was honoured locally but the server refused.
+      setBoard((prev) => (prev === null ? prev : upsertCard(prev, card)));
+      setMoveError("Couldn't bin that card. Try again.");
+    }
+  }
+
+  /** A card came back out of the bin — drop it into its column at the server's rank. */
+  function handleRestored(card: Card) {
+    setBoard((prev) => (prev === null ? prev : upsertCard(prev, card)));
+    setBinNonce((n) => n + 1);
   }
 
   /** Open a card in the modal, starting from a clean (no-conflict) slate. */
@@ -393,6 +460,10 @@ function BoardContent() {
   const [activeCard, setActiveCard] = useState<Card | null>(null);
   const [activeColumn, setActiveColumn] = useState<Column | null>(null);
   const snapshotRef = useRef<BoardDetail | null>(null);
+  // Where the dragged card sat when the drag began. Since `handleDragOver` relocates the card as
+  // you drag, the board at drop time no longer says where it came from — so "did this actually
+  // move?" has to be asked of this, not of current state.
+  const dragOriginRef = useRef<{ columnId: string; index: number } | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
 
   // For cards, a click and a drag start the same way; the distance constraint means a plain click
@@ -408,8 +479,11 @@ function BoardContent() {
   // into" a card, and vice versa.
   const collisionDetection: CollisionDetection = (args) => {
     const draggingColumn = args.active.data.current?.type === "column";
+
     const candidates = args.droppableContainers.filter((c) => {
       const targetType = c.data.current?.type;
+      // A column can only land among columns; a card can land among cards, on a column's card
+      // area, or on the bin. The bin is card-only — dragging a column past it must not arm it.
       return draggingColumn
         ? targetType === "column"
         : targetType === "card" || targetType === "column-cards";
@@ -429,14 +503,62 @@ function BoardContent() {
       return;
     }
     const columnId = columnIdOfCard(board, activeId);
-    const card = columnId ? cardsOf(board, columnId).find((c) => c.id === activeId) : null;
-    setActiveCard(card ?? null);
+    const cards = columnId ? cardsOf(board, columnId) : [];
+    const index = cards.findIndex((c) => c.id === activeId);
+    dragOriginRef.current = columnId !== null && index !== -1 ? { columnId, index } : null;
+    setActiveCard(index === -1 ? null : cards[index]);
+  }
+
+  /**
+   * A card changes column *while* you drag, not on drop. That's what makes "drop it between
+   * these two" work across columns: the destination's `SortableContext` only displaces its cards
+   * around one it actually contains, so until the card is moved in, no gap opens and there is
+   * nothing to aim at. Moving it here means what you see mid-drag is already the outcome, and
+   * `moveCardEnd` is left with nothing to decide but the final index.
+   */
+  function handleDragOver(event: DragOverEvent) {
+    const { active, over } = event;
+    if (over === null || !canEdit) return;
+    if (active.data.current?.type === "column") return; // columns settle on drop only
+
+    setBoard((prev) => {
+      if (prev === null) return prev;
+      const cardId = String(active.id);
+      const fromColumnId = columnIdOfCard(prev, cardId);
+      const toColumnId = columnIdOfTarget(prev, String(over.id));
+      // Same column: the sortable strategy already previews the reorder, and the drop settles it.
+      if (fromColumnId === null || toColumnId === null || fromColumnId === toColumnId) return prev;
+
+      const fromCards = cardsOf(prev, fromColumnId);
+      const moved = fromCards.find((c) => c.id === cardId);
+      if (moved === undefined) return prev;
+
+      const destCards = cardsOf(prev, toColumnId);
+      const insertAt = dropIndex(destCards, active, over);
+      return withColumnCards(
+        withColumnCards(
+          prev,
+          fromColumnId,
+          fromCards.filter((c) => c.id !== cardId),
+        ),
+        toColumnId,
+        [...destCards.slice(0, insertAt), moved, ...destCards.slice(insertAt)],
+      );
+    });
   }
 
   async function handleDragEnd(event: DragEndEvent) {
     setActiveCard(null);
     setActiveColumn(null);
-    if (board === null || !canEdit || event.over === null) return;
+    if (board === null || !canEdit) return;
+    if (event.over === null) {
+      // Dropped on nothing. For a card, `handleDragOver` may already have relocated it locally —
+      // put the board back rather than leaving a move nobody asked for (and the server never saw).
+      if (event.active.data.current?.type !== "column" && snapshotRef.current) {
+        setBoard(snapshotRef.current);
+      }
+      return;
+    }
     if (event.active.data.current?.type === "column") {
       await moveColumnEnd(event);
     } else {
@@ -449,43 +571,61 @@ function BoardContent() {
     if (board === null || over === null) return;
 
     const cardId = String(active.id);
+
+    // `handleDragOver` has already put the card in whichever column it's being dropped on, so
+    // "from" here is normally the destination already; all that's left is its index within it.
     const fromColumnId = columnIdOfCard(board, cardId);
     const toColumnId = columnIdOfTarget(board, String(over.id));
     if (fromColumnId === null || toColumnId === null) return;
 
     const fromCards = cardsOf(board, fromColumnId);
     const fromIndex = fromCards.findIndex((c) => c.id === cardId);
-    const moved = fromCards[fromIndex];
-
-    // Where in the destination column did we drop? Over a card → at that card's index;
-    // over the column's own card area (empty space / empty column) → append.
-    const overId = String(over.id);
-    const destCards = cardsOf(board, toColumnId);
-    const overIndex = isColumnCardsArea(overId)
-      ? destCards.length
-      : destCards.findIndex((c) => c.id === overId);
+    if (fromIndex === -1) return;
 
     // Build the optimistic next board and find the moved card's final neighbours.
-    let next: BoardDetail;
-    let finalCards: Card[];
-    let finalIndex: number;
+    let next = board;
+    let finalCards = fromCards;
+    let finalIndex = fromIndex;
 
     if (fromColumnId === toColumnId) {
+      // Reorder within one column — the same list the sortable strategy has been previewing.
+      const overId = String(over.id);
+      const overIndex = isColumnCardsArea(overId)
+        ? fromCards.length - 1
+        : fromCards.findIndex((c) => c.id === overId);
       const target = overIndex === -1 ? fromCards.length - 1 : overIndex;
-      if (target === fromIndex) return; // dropped in place — nothing to do
-      finalCards = arrayMove(fromCards, fromIndex, target);
-      finalIndex = finalCards.findIndex((c) => c.id === cardId);
-      next = withColumnCards(board, toColumnId, finalCards);
+      if (target !== fromIndex) {
+        finalCards = arrayMove(fromCards, fromIndex, target);
+        finalIndex = finalCards.findIndex((c) => c.id === cardId);
+        next = withColumnCards(board, toColumnId, finalCards);
+      }
     } else {
-      const sourceCards = fromCards.filter((c) => c.id !== cardId);
-      const insertAt = overIndex === -1 ? destCards.length : overIndex;
-      finalCards = [...destCards.slice(0, insertAt), moved, ...destCards.slice(insertAt)];
+      // A drop that never produced a drag-over (a keyboard drag straight onto another column):
+      // relocate the card here instead.
+      const destCards = cardsOf(board, toColumnId);
+      const insertAt = dropIndex(destCards, active, over);
+      finalCards = [
+        ...destCards.slice(0, insertAt),
+        fromCards[fromIndex],
+        ...destCards.slice(insertAt),
+      ];
       finalIndex = insertAt;
       next = withColumnCards(
-        withColumnCards(board, fromColumnId, sourceCards),
+        withColumnCards(
+          board,
+          fromColumnId,
+          fromCards.filter((c) => c.id !== cardId),
+        ),
         toColumnId,
         finalCards,
       );
+    }
+
+    // Ended exactly where it started — nothing to persist. Asked of the drag-start snapshot,
+    // since the board itself has been following the card around since `handleDragOver`.
+    const origin = dragOriginRef.current;
+    if (origin !== null && origin.columnId === toColumnId && origin.index === finalIndex) {
+      return;
     }
 
     setBoard(next);
@@ -599,8 +739,12 @@ function BoardContent() {
     );
   }
 
+  // Note the absence of `overflow-hidden` on <main>: it would make main a scroll container, and
+  // a `sticky` child only sticks within its nearest scrollport. Main never scrolls (it grows to
+  // fit its content while the document scrolls), so clipping here would quietly stop both the
+  // header and the bin bar from sticking at all. The ambient wash clips itself.
   return (
-    <main className="animate-page-in relative flex min-h-full flex-1 flex-col overflow-hidden bg-canvas">
+    <main className="animate-page-in relative flex min-h-full flex-1 flex-col bg-canvas">
       {/* Ambient wash, so the board sits on a surface rather than a flat fill. */}
       <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="animate-float-slow absolute -right-56 -top-40 h-[28rem] w-[28rem] rounded-full bg-brand-200/20 blur-3xl" />
@@ -625,6 +769,7 @@ function BoardContent() {
           <PresenceStack viewers={viewers} currentUserId={user?.id} />
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <HeaderButton onClick={() => setBinOpen(true)} icon="🗑" label="Bin" />
           <HeaderButton onClick={() => setActivityOpen(true)} icon="◷" label="Activity" />
           <HeaderButton onClick={() => setSharing(true)} icon="↗" label="Share" />
           {isOwner && (
@@ -662,13 +807,21 @@ function BoardContent() {
       <DndContext
         sensors={sensors}
         collisionDetection={collisionDetection}
+        // `handleDragOver` moves a card between columns mid-drag, which changes the layout under
+        // the cursor. Without re-measuring, collisions keep resolving against the rects captured
+        // when the drag began, and the card lands by stale geometry.
+        measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
         onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
         onDragCancel={() => {
           setActiveCard(null);
           setActiveColumn(null);
+          // A cancelled card drag has to undo whatever `handleDragOver` did on the way.
+          if (snapshotRef.current) setBoard(snapshotRef.current);
         }}
       >
+
         <SortableContext
           items={board.columns.map((c) => c.column.id)}
           strategy={horizontalListSortingStrategy}
@@ -685,6 +838,7 @@ function BoardContent() {
                 onDelete={() => handleDeleteColumn(column.id)}
                 onCreateCard={(title) => handleAddCard(column.id, title)}
                 onCardClick={openCardModal}
+                onBinCard={handleBinCard}
               />
             ))}
             {canEdit && <AddColumn onAdd={handleAddColumn} />}
@@ -693,26 +847,37 @@ function BoardContent() {
 
         {/* The floating copy of whatever is being dragged. It's deliberately *not* a 1:1 clone:
             it tilts and casts a deeper shadow, so the held item reads as lifted off the board. */}
-        <DragOverlay dropAnimation={{ duration: 220, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }}>
-          {activeCard ? (
+        {/* Portalled to <body>, and that is load-bearing rather than tidiness. DragOverlay is
+            `position: fixed`, but <main> carries `.animate-page-in`, whose `fill-mode: both`
+            leaves a transform applied for the life of the page — and an element with a transform
+            becomes the containing block for its fixed descendants. Rendered in place, the held
+            card therefore resolved against <main> instead of the viewport and floated exactly
+            `scrollY` pixels away from the cursor: fine at the top of a board, visibly wrong once
+            you scrolled down to reach a card. The portal moves it out from under that ancestor.
+            React context flows through portals, so DragOverlay still sees its DndContext. */}
+        {createPortal(
+          <DragOverlay dropAnimation={{ duration: 220, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }}>
+            {activeCard ? (
             <CardFace
-              card={activeCard}
-              floating
-              assigneeName={
-                activeCard.assigneeId ? assigneeNameById[activeCard.assigneeId] ?? null : null
-              }
-            />
-          ) : activeColumn ? (
-            <div className="w-[19rem] rotate-1 rounded-2xl border border-brand-300 bg-sunken p-3 shadow-[var(--shadow-xl)] ring-2 ring-brand-200">
-              <div className="flex items-center gap-2">
-                <span className="text-zinc-400" aria-hidden>
-                  ⠿
-                </span>
-                <span className="text-sm font-semibold text-zinc-800">{activeColumn.title}</span>
+                card={activeCard}
+                floating
+                assigneeName={
+                  activeCard.assigneeId ? assigneeNameById[activeCard.assigneeId] ?? null : null
+                }
+              />
+            ) : activeColumn ? (
+              <div className="w-[19rem] rotate-1 rounded-2xl border border-brand-300 bg-sunken p-3 shadow-[var(--shadow-xl)] ring-2 ring-brand-200">
+                <div className="flex items-center gap-2">
+                  <span className="text-zinc-400" aria-hidden>
+                    ⠿
+                  </span>
+                  <span className="text-sm font-semibold text-zinc-800">{activeColumn.title}</span>
+                </div>
               </div>
-            </div>
-          ) : null}
-        </DragOverlay>
+            ) : null}
+          </DragOverlay>,
+          document.body,
+        )}
       </DndContext>
       </div>
 
@@ -737,6 +902,17 @@ function BoardContent() {
           isOwner={isOwner}
           refreshSignal={memberEventNonce}
           onClose={() => setSharing(false)}
+        />
+      )}
+
+
+      {binOpen && (
+        <BinPanel
+          boardId={id}
+          canEdit={canEdit}
+          refreshSignal={binNonce}
+          onRestored={handleRestored}
+          onClose={() => setBinOpen(false)}
         />
       )}
 

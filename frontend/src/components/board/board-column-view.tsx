@@ -36,6 +36,7 @@ export function BoardColumnView({
   onDelete,
   onCreateCard,
   onCardClick,
+  onBinCard,
 }: {
   column: Column;
   cards: Card[];
@@ -46,6 +47,8 @@ export function BoardColumnView({
   onDelete: () => Promise<void>;
   onCreateCard: (title: string) => Promise<void>;
   onCardClick: (card: Card) => void;
+  /** Fired when a card's hold-to-bin control completes. */
+  onBinCard: (card: Card) => void;
 }) {
   // The column itself is sortable (draggable among the other columns). Only the grip handle in
   // the header actually starts the drag — see `listeners` below — so the header's rename/delete
@@ -197,6 +200,7 @@ export function BoardColumnView({
               canEdit={canEdit}
               assigneeName={card.assigneeId ? assigneeNameById[card.assigneeId] ?? null : null}
               onClick={() => onCardClick(card)}
+              onBin={() => onBinCard(card)}
             />
           ))}
         </div>

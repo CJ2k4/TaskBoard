@@ -59,7 +59,10 @@ public class ActivityRecorder {
             case CARD_CREATED -> "added card " + quote(((CardResponse) payload).title());
             case CARD_UPDATED -> "edited card " + quote(((CardResponse) payload).title());
             case CARD_MOVED -> "moved card " + quote(((CardResponse) payload).title());
-            case CARD_DELETED -> "deleted a card";
+            // The payload is a DeletedRef, so there is no title to quote — the wire only needs the
+            // id for subscribers to drop the card. The bin itself is where the titles live.
+            case CARD_DELETED -> "moved a card to the bin";
+            case CARD_RESTORED -> "restored card " + quote(((CardResponse) payload).title());
 
             case COLUMN_CREATED -> "added column " + quote(((ColumnResponse) payload).title());
             case COLUMN_UPDATED -> "renamed column " + quote(((ColumnResponse) payload).title());

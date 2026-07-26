@@ -18,6 +18,7 @@ export type BoardEventType =
   | "CARD_UPDATED"
   | "CARD_MOVED"
   | "CARD_DELETED"
+  | "CARD_RESTORED"
   | "COLUMN_CREATED"
   | "COLUMN_UPDATED"
   | "COLUMN_MOVED"
@@ -86,8 +87,12 @@ function removeCardEverywhere(board: BoardDetail, cardId: string): BoardDetail {
  * If we don't have that column locally our snapshot is stale (a column created while our socket
  * was briefly down, say) — we drop the event rather than crash. The reconnect resync is what
  * heals a stale snapshot; guessing here would only paper over it.
+ *
+ * Exported because a restore from the bin needs exactly this and nothing else: the REST response
+ * is a whole card carrying the server's rank, so putting it back is the same insert-and-re-sort
+ * as any live event. Writing a second copy in the board page would be the version that drifts.
  */
-function upsertCard(board: BoardDetail, card: Card): BoardDetail {
+export function upsertCard(board: BoardDetail, card: Card): BoardDetail {
   const without = removeCardEverywhere(board, card.id);
   const target = without.columns.find((c) => c.column.id === card.columnId);
   if (!target) return board;
@@ -128,7 +133,12 @@ export function applyBoardEvent(board: BoardDetail, event: BoardEvent): BoardDet
     case "CARD_CREATED":
     case "CARD_UPDATED":
     case "CARD_MOVED":
+    // A restore is an upsert like any other: the payload is the whole card at its new rank, so
+    // the card reappears in its column with no special handling and no refetch.
+    case "CARD_RESTORED":
       return upsertCard(board, event.payload as Card);
+    // "Deleted" means "moved to the bin" — the card leaves the board either way, and the bin is
+    // read from its own endpoint, so nothing here needs to know the difference.
     case "CARD_DELETED":
       return removeCardEverywhere(board, (event.payload as DeletedRef).id);
     case "COLUMN_CREATED":

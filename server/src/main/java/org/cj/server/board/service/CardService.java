@@ -1,12 +1,16 @@
 package org.cj.server.board.service;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.cj.server.board.dto.BinnedCardResponse;
 import org.cj.server.board.dto.BoardEventType;
 import org.cj.server.board.dto.CardResponse;
 import org.cj.server.board.dto.DeletedRef;
@@ -18,6 +22,7 @@ import org.cj.server.board.entity.Role;
 import org.cj.server.board.repository.BoardColumnRepository;
 import org.cj.server.board.repository.BoardMembershipRepository;
 import org.cj.server.board.repository.CardRepository;
+import org.cj.server.common.exception.ConflictException;
 import org.cj.server.common.exception.NotFoundException;
 import org.cj.server.common.ranking.LexoRank;
 import org.cj.server.common.ranking.RankExhaustedException;
@@ -60,7 +65,7 @@ public class CardService {
                 .orElseThrow(() -> new NotFoundException("Column not found"));
         boardService.requireBoardAccess(column.getBoardId(), userId, Role.EDITOR);
 
-        String lastRank = cards.findFirstByColumnIdOrderByRankDesc(columnId)
+        String lastRank = cards.findFirstByColumnIdAndDeletedAtIsNullOrderByRankDesc(columnId)
                 .map(Card::getRank)
                 .orElse(null);
         String rank = LexoRank.between(lastRank, null);
@@ -97,12 +102,62 @@ public class CardService {
         }
     }
 
+    /**
+     * Move a card to the board's bin — what "delete a card" has meant since the bin landed. The
+     * row survives with {@code deletedAt} set, so it leaves every board read (and every client's
+     * board, via {@code CARD_DELETED}) while staying restorable until {@link BinPurgeJob} purges
+     * it. Callers see no difference: the endpoint, the status code and the event are unchanged.
+     */
     @Transactional
     public void delete(UUID cardId, UUID userId) {
         Card card = requireCardOnBoard(cardId, userId, Role.EDITOR);
-        cards.delete(card);
+        card.moveToBin(userId);
+        cards.save(card);
         events.publishEvent(new BoardChangedEvent(
                 card.getBoardId(), userId, BoardEventType.CARD_DELETED, new DeletedRef(card.getId())));
+    }
+
+    /**
+     * Take a card back out of the bin, appended to the end of the column it came from. Its old
+     * rank is not reused — cards created while it was away may have taken that spot — so it is
+     * appended like a new card, which is also the least surprising place to find it.
+     *
+     * <p>The original column is guaranteed to still exist: {@code ColumnService} refuses to
+     * delete a column that still holds binned cards, precisely so this never has to guess at a
+     * fallback.
+     */
+    @Transactional
+    public Card restore(UUID cardId, UUID userId) {
+        Card card = cards.findById(cardId)
+                .orElseThrow(() -> new NotFoundException("Card not found"));
+        boardService.requireBoardAccess(card.getBoardId(), userId, Role.EDITOR);
+        if (!card.isBinned()) {
+            throw new ConflictException("Card is not in the bin");
+        }
+
+        String lastRank = cards.findFirstByColumnIdAndDeletedAtIsNullOrderByRankDesc(card.getColumnId())
+                .map(Card::getRank)
+                .orElse(null);
+        card.restore(LexoRank.between(lastRank, null));
+        Card saved = cards.save(card);
+        announce(saved, userId, BoardEventType.CARD_RESTORED);
+        return saved;
+    }
+
+    /**
+     * A board's bin. Readable at {@link Role#VIEWER} — it is board content like any other, and a
+     * viewer seeing what was removed is harmless; putting it back is the {@code EDITOR} act.
+     */
+    @Transactional(readOnly = true)
+    public List<BinnedCardResponse> listBin(UUID boardId, UUID userId, Duration retention) {
+        boardService.requireBoardAccess(boardId, userId, Role.VIEWER);
+        // One lookup of the board's columns, so rendering "was in Backlog" for N cards stays a
+        // single query rather than N.
+        Map<UUID, String> columnTitles = columns.findByBoardIdOrderByRankAsc(boardId).stream()
+                .collect(Collectors.toMap(BoardColumn::getId, BoardColumn::getTitle));
+        return cards.findByBoardIdAndDeletedAtIsNotNullOrderByDeletedAtDesc(boardId).stream()
+                .map(c -> BinnedCardResponse.from(c, columnTitles.get(c.getColumnId()), retention))
+                .toList();
     }
 
     /**
@@ -129,7 +184,7 @@ public class CardService {
 
         // The card's future siblings, in current rank order, minus the card itself (it may
         // already live in the target column when reordering in place).
-        List<Card> siblings = cards.findByColumnIdOrderByRankAsc(target.getId()).stream()
+        List<Card> siblings = cards.findByColumnIdAndDeletedAtIsNullOrderByRankAsc(target.getId()).stream()
                 .filter(c -> !c.getId().equals(card.getId()))
                 .toList();
 
@@ -204,11 +259,16 @@ public class CardService {
     }
 
     /**
-     * Load a card and assert the caller holds at least {@code required} on its board — 404 if
-     * the card is gone or the board isn't theirs, 403 if their role is too weak.
+     * Load a <b>live</b> card and assert the caller holds at least {@code required} on its board
+     * — 404 if the card is gone or the board isn't theirs, 403 if their role is too weak.
+     *
+     * <p>A binned card is treated as gone: to everything except the bin listing and
+     * {@link #restore}, a card in the bin does not exist, so editing or moving one is a 404
+     * rather than a silent write to a card nobody can see.
      */
     private Card requireCardOnBoard(UUID cardId, UUID userId, Role required) {
         Card card = cards.findById(cardId)
+                .filter(c -> !c.isBinned())
                 .orElseThrow(() -> new NotFoundException("Card not found"));
         boardService.requireBoardAccess(card.getBoardId(), userId, required);
         return card;

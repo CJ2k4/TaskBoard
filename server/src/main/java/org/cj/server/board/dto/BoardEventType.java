@@ -8,7 +8,11 @@ package org.cj.server.board.dto;
  * <p>Each constant fixes the shape of the event's payload, and the client switches on it:
  *
  * <ul>
- *   <li>{@code CARD_*} → {@link CardResponse}, except {@code CARD_DELETED} → {@link DeletedRef}</li>
+ *   <li>{@code CARD_*} → {@link CardResponse}, except {@code CARD_DELETED} → {@link DeletedRef}.
+ *       {@code CARD_DELETED} means "moved to the bin", not "gone for ever" — the card can come
+ *       back as {@code CARD_RESTORED}, which carries the whole {@link CardResponse} again so
+ *       subscribers can re-insert it without refetching. A retention purge is silent: the card
+ *       already left every client's board when it was binned, so there is nothing to announce.</li>
  *   <li>{@code COLUMN_*} → {@link ColumnResponse}, except {@code COLUMN_DELETED} → {@link DeletedRef}</li>
  *   <li>{@code BOARD_UPDATED} → {@link BoardSummary}, {@code BOARD_DELETED} → {@link DeletedRef}</li>
  *   <li>{@code MEMBER_*} → {@link MembershipResponse} (removal included: clients need the
@@ -28,6 +32,7 @@ public enum BoardEventType {
     CARD_UPDATED,
     CARD_MOVED,
     CARD_DELETED,
+    CARD_RESTORED,
 
     COLUMN_CREATED,
     COLUMN_UPDATED,

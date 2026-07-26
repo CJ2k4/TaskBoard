@@ -1,11 +1,13 @@
 package org.cj.server.board.controller;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -14,10 +16,12 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import org.cj.server.auth.security.AuthPrincipal;
+import org.cj.server.board.dto.BinnedCardResponse;
 import org.cj.server.board.dto.CardResponse;
 import org.cj.server.board.dto.CreateCardRequest;
 import org.cj.server.board.dto.MoveCardRequest;
 import org.cj.server.board.dto.UpdateCardRequest;
+import org.cj.server.board.service.BinPurgeJob;
 import org.cj.server.board.service.CardService;
 
 import jakarta.validation.Valid;
@@ -64,9 +68,29 @@ public class CardController {
         return CardResponse.from(cardService.move(id, me.userId(), req));
     }
 
+    /**
+     * Move a card to the board's bin. Still a {@code DELETE} returning 204 — from the client's
+     * point of view the card leaves the board exactly as before; it is simply recoverable now.
+     */
     @DeleteMapping("/api/cards/{id}")
     public ResponseEntity<Void> delete(@PathVariable UUID id, @AuthenticationPrincipal AuthPrincipal me) {
         cardService.delete(id, me.userId());
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Take a card back out of the bin. Returns the restored card so the caller can drop it
+     * straight into its column without refetching the board.
+     */
+    @PostMapping("/api/cards/{id}/restore")
+    public CardResponse restore(@PathVariable UUID id, @AuthenticationPrincipal AuthPrincipal me) {
+        return CardResponse.from(cardService.restore(id, me.userId()));
+    }
+
+    /** A board's bin: the cards binned but not yet purged, most recent first. */
+    @GetMapping("/api/boards/{boardId}/bin")
+    public List<BinnedCardResponse> bin(@PathVariable UUID boardId,
+                                        @AuthenticationPrincipal AuthPrincipal me) {
+        return cardService.listBin(boardId, me.userId(), BinPurgeJob.RETENTION);
     }
 }

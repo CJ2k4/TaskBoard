@@ -71,8 +71,16 @@ public class ColumnService {
     @Transactional
     public void delete(UUID columnId, UUID userId) {
         BoardColumn column = requireColumnOnBoard(columnId, userId, Role.EDITOR);
-        if (cards.existsByColumnId(columnId)) {
+        if (cards.existsByColumnIdAndDeletedAtIsNull(columnId)) {
             throw new ConflictException("Column is not empty; move or delete its cards first");
+        }
+        // A column can look empty while still holding cards in the bin. The card→column FK is
+        // ON DELETE CASCADE, so dropping the column here would take those rows with it and
+        // quietly break the promise that a binned card stays restorable — and it is also what
+        // lets restore() assume the original column still exists. Refuse, and say what to do.
+        if (cards.existsByColumnIdAndDeletedAtIsNotNull(columnId)) {
+            throw new ConflictException(
+                    "Column still has cards in the bin; restore them or wait for them to expire");
         }
         columns.delete(column);
         events.publishEvent(new BoardChangedEvent(

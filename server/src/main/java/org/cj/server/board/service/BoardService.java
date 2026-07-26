@@ -122,7 +122,7 @@ public class BoardService {
                             board.getOwnerId(),
                             roleOn(mine, board.getId()),
                             columns.countByBoardId(board.getId()),
-                            cards.countByBoardId(board.getId()),
+                            cards.countByBoardIdAndDeletedAtIsNull(board.getId()),
                             roster,
                             board.getCreatedAt(),
                             board.getUpdatedAt());
@@ -149,7 +149,7 @@ public class BoardService {
         BoardMembership membership = requireMembership(boardId, userId, Role.VIEWER);
         Board board = loadBoard(boardId);
         List<BoardColumn> boardColumns = columns.findByBoardIdOrderByRankAsc(boardId);
-        List<Card> boardCards = cards.findByBoardIdOrderByRankAsc(boardId);
+        List<Card> boardCards = cards.findByBoardIdAndDeletedAtIsNullOrderByRankAsc(boardId);
         return BoardDetailResponse.of(board, boardColumns, boardCards, membership.getRole());
     }
 

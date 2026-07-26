@@ -55,6 +55,19 @@ public class Card {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /**
+     * When this card was moved to the bin, or null while it is live. This is the soft-delete
+     * marker: every board-facing read filters on it being null, so a binned card vanishes from
+     * the board without the row going away, and stays restorable until the retention job
+     * purges it.
+     */
+    @Column(name = "deleted_at")
+    private Instant deletedAt;
+
+    /** Who binned it — shown in the bin. Null once that user is deleted (FK is SET NULL). */
+    @Column(name = "deleted_by")
+    private UUID deletedBy;
+
     protected Card() {
     }
 
@@ -110,6 +123,35 @@ public class Card {
         this.rank = rank;
     }
 
+    /**
+     * Move this card to the bin. The column, rank and every field are left untouched so a
+     * restore can put it back exactly where it was; only the two bin markers are set.
+     * {@code updatedAt} is deliberately <b>not</b> bumped — binning isn't an edit of the card's
+     * content, and must not win a later last-write-wins conflict against a real edit.
+     */
+    public void moveToBin(UUID actorId) {
+        this.deletedAt = Instant.now();
+        this.deletedBy = actorId;
+    }
+
+    /**
+     * Bring this card back out of the bin at a freshly computed rank — its old rank may well
+     * have been taken by a card created while it was away, so the caller appends it. This one
+     * <em>does</em> bump {@code updatedAt}: a restore puts a card back in front of everyone, so
+     * it should read as a change.
+     */
+    public void restore(String rank) {
+        this.deletedAt = null;
+        this.deletedBy = null;
+        this.rank = rank;
+        this.updatedAt = Instant.now();
+    }
+
+    /** Whether this card is sitting in the bin rather than on the board. */
+    public boolean isBinned() {
+        return deletedAt != null;
+    }
+
     public UUID getId() {
         return id;
     }
@@ -148,5 +190,13 @@ public class Card {
 
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    public Instant getDeletedAt() {
+        return deletedAt;
+    }
+
+    public UUID getDeletedBy() {
+        return deletedBy;
     }
 }

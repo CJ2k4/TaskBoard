@@ -5,6 +5,7 @@ import { CSS } from "@dnd-kit/utilities";
 
 import type { Card } from "@/lib/boards";
 import { avatarColor, initials } from "@/lib/avatar";
+import { HoldToBinButton } from "@/components/board/hold-to-bin-button";
 
 /** Shared card styling, so a dragged card and the <DragOverlay> copy look identical. */
 export const CARD_CLASS =
@@ -103,11 +104,14 @@ export function CardFace({
 export function SortableCard({
   card,
   onClick,
+  onBin,
   canEdit,
   assigneeName = null,
 }: {
   card: Card;
   onClick: () => void;
+  /** Fired once the card's bin control has been held for its full duration. */
+  onBin: () => void;
   canEdit: boolean;
   assigneeName?: string | null;
 }) {
@@ -117,31 +121,61 @@ export function SortableCard({
     disabled: !canEdit,
   });
 
+  // The sortable node is now this wrapper rather than the clickable button, because the bin
+  // control has to be a *sibling* of that button: a button cannot legally contain another, and a
+  // press on the bin must charge the hold instead of starting a drag. Keeping the drag listeners
+  // on the inner button means the bin never sees them, and the wrapper still carries the
+  // transform dnd-kit animates.
   return (
-    <button
+    <div
       ref={setNodeRef}
-      type="button"
-      onClick={onClick}
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
         opacity: isDragging ? 0.35 : 1,
       }}
-      className={`group/card block w-full touch-none rounded-xl ${
-        canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
-      }`}
-      {...attributes}
-      {...listeners}
+      className="group/card relative"
     >
-      <div
-        className={`${CARD_CLASS} transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/card:-translate-y-0.5 group-hover/card:border-brand-200 group-hover/card:shadow-[var(--shadow-md)] group-active/card:translate-y-0 ${
-          isDragging ? "shadow-none" : ""
+      {canEdit && (
+        // Vertically centred on the right edge, inside the card's padding. Hidden while this
+        // card is the one in flight — a control you cannot press has no business following the
+        // cursor around.
+        //
+        // The explicit `z-10` is load-bearing. This span is transformed (`-translate-y-1/2`) and
+        // so is the card face on hover (`group-hover/card:-translate-y-0.5`); both would sit at
+        // `z-index: auto`, and elements in that band paint in DOM order — so the face, coming
+        // second, drew straight over the icon the moment you hovered the card. Unhovered the
+        // face has no transform and stays in the lower band, which is why it only vanished on
+        // hover. Naming a z-index puts this span above either way.
+        <span
+          className={`absolute right-2.5 top-1/2 z-10 -translate-y-1/2 transition-opacity duration-200 ${
+            isDragging ? "opacity-0" : "opacity-60 group-hover/card:opacity-100"
+          }`}
+        >
+          <HoldToBinButton title={card.title} onHoldComplete={onBin} />
+        </span>
+      )}
+
+      <button
+        type="button"
+        onClick={onClick}
+        className={`block w-full touch-none rounded-xl text-left ${
+          canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
         }`}
+        {...attributes}
+        {...listeners}
       >
-        {card.label && <LabelChip label={card.label} />}
-        <div className="leading-snug">{card.title}</div>
-        {assigneeName && <AssigneeDot userId={card.assigneeId as string} name={assigneeName} />}
-      </div>
-    </button>
+        <div
+          className={`${CARD_CLASS} transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/card:-translate-y-0.5 group-hover/card:border-brand-200 group-hover/card:shadow-[var(--shadow-md)] group-active/card:translate-y-0 ${
+            isDragging ? "shadow-none" : ""
+          }`}
+        >
+          {card.label && <LabelChip label={card.label} />}
+          {/* Right padding keeps the title clear of the bin control sitting over this edge. */}
+          <div className={`leading-snug ${canEdit ? "pr-8" : ""}`}>{card.title}</div>
+          {assigneeName && <AssigneeDot userId={card.assigneeId as string} name={assigneeName} />}
+        </div>
+      </button>
+    </div>
   );
 }
