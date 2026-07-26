@@ -1,0 +1,107 @@
+name: CI
+
+# Runs on every push and every PR. The two jobs are independent and run in parallel, so a
+# red run points straight at the side that broke and the wall-clock is the slower of the two.
+on:
+  push:
+  pull_request:
+
+# A newer push to the same branch makes an in-flight run obsolete — cancel it rather than
+# queueing up results nobody will read.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: Backend (Java 21 + Postgres)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    # Nearly every test class is a full @SpringBootTest, and Flyway + `ddl-auto=validate` need a
+    # real database — so the suite cannot run without Postgres. Credentials mirror
+    # docker-compose.yml on purpose: application.properties already defaults to exactly this
+    # URL/user/password, so no test-specific config is needed anywhere in the repo.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: taskboard
+          POSTGRES_USER: taskboard
+          POSTGRES_PASSWORD: taskboard
+        ports:
+          - 5432:5432
+        # Without this the job would start Maven before Postgres accepts connections.
+        options: >-
+          --health-cmd "pg_isready -U taskboard -d taskboard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21" # matches <java.version> in server/pom.xml; the build fails on older
+          cache: maven
+
+      # `verify` runs the tests AND packages the jar, so a green run also proves the artifact builds.
+      # JWT_SECRET / GOOGLE_CLIENT_ID are deliberately unset: application.properties carries dev
+      # defaults, and GoogleAuthIntegrationTest mocks the token verifier, so nothing hits the network.
+      - name: Build and test
+        run: ./mvnw -B clean verify
+        env:
+          DB_URL: jdbc:postgresql://localhost:5432/taskboard
+          DB_USERNAME: taskboard
+          DB_PASSWORD: taskboard
+
+      # Makes a failure debuggable from the run page instead of "reproduce it locally".
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: server/target/surefire-reports/
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22" # LTS; Next 16 requires >= 20.9
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Type errors are the main way a backend DTO change breaks the frontend silently — `next build`
+      # alone would not always surface them, so this runs first and on its own.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Placeholder values matching .env.example. Nothing fetches at build time today, but keeping
+      # the build independent of real config means it never starts depending on a repo secret.
+      - name: Build
+        run: npm run build
+        env:
+          API_BASE_URL: http://localhost:8080
+          NEXT_PUBLIC_API_URL: http://localhost:8080
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID: ""

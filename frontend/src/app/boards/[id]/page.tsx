@@ -43,6 +43,7 @@ import {
   type MoveColumnBody,
 } from "@/lib/boards";
 import { Protected } from "@/components/protected";
+import { PageNote } from "@/components/page-note";
 import { BrandMark } from "@/components/brand-mark";
 import { BoardColumnView } from "@/components/board/board-column-view";
 import { CardModal, type Assignable } from "@/components/board/card-modal";
@@ -173,9 +174,26 @@ function BoardContent() {
     }
   }, [authFetch, id]);
 
+  // Initial load. The fetch is inlined rather than calling `load()` so nothing sets state
+  // synchronously in the effect body; `status` already starts as "loading". `load` stays for the
+  // imperative paths — the retry button and the realtime `onResync`, where flipping back to
+  // "loading" is wanted.
   useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+    getBoard(authFetch, id)
+      .then((next) => {
+        if (cancelled) return;
+        setBoard(next);
+        setStatus("ready");
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setStatus(err instanceof ApiError && err.status === 404 ? "notfound" : "error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authFetch, id]);
 
   // Keep the roster fresh for the assignee picker. Non-fatal on failure — the picker just stays
   // empty; a VIEWER may still read cards. memberEventNonce re-runs it after any MEMBER_* event.
@@ -549,50 +567,55 @@ function BoardContent() {
   // we were showing. A calm note beats yanking the page out from under the user.
   if (goneReason !== null) {
     return (
-      <CenteredNote>
+      <PageNote>
         {goneReason}{" "}
         <Link href="/dashboard" className="underline">
           Back to your boards
         </Link>
-      </CenteredNote>
+      </PageNote>
     );
   }
   if (status === "loading") {
-    return <CenteredNote>Loading board…</CenteredNote>;
+    return <BoardSkeleton />;
   }
   if (status === "notfound") {
     return (
-      <CenteredNote>
+      <PageNote>
         Board not found.{" "}
         <Link href="/dashboard" className="underline">
           Back to your boards
         </Link>
-      </CenteredNote>
+      </PageNote>
     );
   }
   if (status === "error" || board === null) {
     return (
-      <CenteredNote>
+      <PageNote>
         Something went wrong loading this board.{" "}
         <button onClick={load} className="underline">
           Retry
         </button>
-      </CenteredNote>
+      </PageNote>
     );
   }
 
   return (
-    <main className="animate-page-in flex min-h-full flex-1 flex-col bg-zinc-50 dark:bg-black">
-      <header className="flex h-14 items-center justify-between gap-4 border-b border-[rgba(29,28,24,0.09)] bg-[#FBFAF7] px-6">
-        <div className="flex items-center gap-3">
+    <main className="animate-page-in relative flex min-h-full flex-1 flex-col overflow-hidden bg-canvas">
+      {/* Ambient wash, so the board sits on a surface rather than a flat fill. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="animate-float-slow absolute -right-56 -top-40 h-[28rem] w-[28rem] rounded-full bg-brand-200/20 blur-3xl" />
+      </div>
+
+      <header className="glass sticky top-0 z-30 flex h-14 items-center justify-between gap-4 border-b border-line px-6">
+        <div className="flex min-w-0 items-center gap-3">
           <BrandMark />
-          <span className="text-lg text-zinc-300 dark:text-zinc-600" aria-hidden>
+          <span className="text-lg text-zinc-300" aria-hidden>
             /
           </span>
           {isOwner ? (
             <BoardTitle name={board.name} onRename={handleRenameBoard} />
           ) : (
-            <h1 className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+            <h1 className="truncate text-lg font-semibold tracking-tight text-zinc-900">
               {board.name}
             </h1>
           )}
@@ -601,37 +624,36 @@ function BoardContent() {
           <ConnectionDot state={connection} />
           <PresenceStack viewers={viewers} currentUserId={user?.id} />
         </div>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setActivityOpen(true)}
-            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
-          >
-            Activity
-          </button>
-          <button
-            type="button"
-            onClick={() => setSharing(true)}
-            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
-          >
-            Share
-          </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <HeaderButton onClick={() => setActivityOpen(true)} icon="◷" label="Activity" />
+          <HeaderButton onClick={() => setSharing(true)} icon="↗" label="Share" />
           {isOwner && (
-            <InlineConfirmButton onConfirm={handleDeleteBoard} label="Delete board" />
+            <span className="ml-1">
+              <InlineConfirmButton onConfirm={handleDeleteBoard} label="Delete board" />
+            </span>
           )}
         </div>
       </header>
 
-      <div className="flex flex-1 flex-col p-6">
+      <div className="relative flex flex-1 flex-col p-6">
       <BoardDescription
         description={board.description}
         canEdit={isOwner}
         onSave={handleUpdateDescription}
       />
       {moveError && (
-        <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-          <span>{moveError}</span>
-          <button onClick={() => setMoveError(null)} className="font-medium underline">
+        <div
+          role="alert"
+          className="animate-pop-in mb-4 flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700 shadow-[var(--shadow-sm)]"
+        >
+          <span className="flex items-center gap-2">
+            <span aria-hidden>⚠</span>
+            {moveError}
+          </span>
+          <button
+            onClick={() => setMoveError(null)}
+            className="press rounded-lg px-2 py-1 font-semibold hover:bg-red-100"
+          >
             Dismiss
           </button>
         </div>
@@ -651,7 +673,7 @@ function BoardContent() {
           items={board.columns.map((c) => c.column.id)}
           strategy={horizontalListSortingStrategy}
         >
-          <div className="flex flex-1 items-start gap-4 overflow-x-auto pb-4">
+          <div className="scroll-slim flex flex-1 items-start gap-4 overflow-x-auto pb-4">
             {board.columns.map(({ column, cards }) => (
               <BoardColumnView
                 key={column.id}
@@ -669,17 +691,25 @@ function BoardContent() {
           </div>
         </SortableContext>
 
-        <DragOverlay>
+        {/* The floating copy of whatever is being dragged. It's deliberately *not* a 1:1 clone:
+            it tilts and casts a deeper shadow, so the held item reads as lifted off the board. */}
+        <DragOverlay dropAnimation={{ duration: 220, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }}>
           {activeCard ? (
             <CardFace
               card={activeCard}
+              floating
               assigneeName={
                 activeCard.assigneeId ? assigneeNameById[activeCard.assigneeId] ?? null : null
               }
             />
           ) : activeColumn ? (
-            <div className="w-72 rounded-xl border border-zinc-300 bg-zinc-100 p-3 text-sm font-semibold text-zinc-800 shadow-lg dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100">
-              {activeColumn.title}
+            <div className="w-[19rem] rotate-1 rounded-2xl border border-brand-300 bg-sunken p-3 shadow-[var(--shadow-xl)] ring-2 ring-brand-200">
+              <div className="flex items-center gap-2">
+                <span className="text-zinc-400" aria-hidden>
+                  ⠿
+                </span>
+                <span className="text-sm font-semibold text-zinc-800">{activeColumn.title}</span>
+              </div>
             </div>
           ) : null}
         </DragOverlay>
@@ -766,7 +796,7 @@ function BoardDescription({
         }}
         maxLength={280}
         placeholder="Add a description…"
-        className="mb-4 w-full max-w-xl rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+        className="animate-pop-in mb-4 w-full max-w-xl rounded-lg border border-brand-300 bg-white px-3 py-2 text-sm text-zinc-700 outline-none transition-shadow focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
       />
     );
   }
@@ -777,9 +807,9 @@ function BoardDescription({
     <p
       onClick={canEdit ? () => setEditing(true) : undefined}
       title={canEdit ? "Click to edit the description" : undefined}
-      className={`mb-4 text-sm ${
-        description ? "text-zinc-500 dark:text-zinc-400" : "text-zinc-400 dark:text-zinc-600"
-      } ${canEdit ? "cursor-text" : ""}`}
+      className={`mb-4 -mx-2 max-w-xl rounded-lg px-2 py-1 text-sm transition-colors duration-200 ${
+        description ? "text-zinc-500" : "text-zinc-400"
+      } ${canEdit ? "cursor-text hover:bg-paper/70 hover:text-zinc-700" : ""}`}
     >
       {description ?? "Add a description…"}
     </p>
@@ -821,7 +851,7 @@ function BoardTitle({
             setEditing(false);
           }
         }}
-        className="rounded border border-zinc-300 bg-white px-2 py-1 text-lg font-semibold text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+        className="animate-pop-in rounded-lg border border-brand-300 bg-white px-2 py-1 text-lg font-semibold text-zinc-900 outline-none transition-shadow focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
       />
     );
   }
@@ -829,10 +859,37 @@ function BoardTitle({
     <h1
       onClick={() => setEditing(true)}
       title="Click to rename"
-      className="cursor-text text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50"
+      className="-mx-2 cursor-text truncate rounded-lg px-2 py-0.5 text-lg font-semibold tracking-tight text-zinc-900 transition-colors duration-200 hover:bg-paper hover:text-brand-700"
     >
       {name}
     </h1>
+  );
+}
+
+/** A header action: an icon that slides in on hover beside its label. */
+function HeaderButton({
+  onClick,
+  icon,
+  label,
+}: {
+  onClick: () => void;
+  icon: string;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="press group flex items-center gap-1.5 rounded-lg border border-line-strong bg-paper/70 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+    >
+      <span
+        aria-hidden
+        className="text-zinc-400 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-125 group-hover:text-brand-500"
+      >
+        {icon}
+      </span>
+      {label}
+    </button>
   );
 }
 
@@ -857,19 +914,19 @@ function AddColumn({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
   return (
     <form
       onSubmit={submit}
-      className="flex w-72 shrink-0 flex-col gap-2 rounded-xl border border-dashed border-zinc-300 p-3 dark:border-zinc-700"
+      className="animate-fade-in flex w-[19rem] shrink-0 flex-col gap-2 rounded-2xl border border-dashed border-line-strong p-3 transition-colors duration-300 hover:border-brand-300 hover:bg-brand-50/30"
     >
       <input
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Add a column…"
-        className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+        className="rounded-lg border border-line bg-paper px-3 py-2 text-sm text-zinc-900 outline-none transition-shadow duration-200 focus:border-brand-400 focus:shadow-[0_0_0_4px_rgba(99,102,241,0.12)]"
       />
       {title.trim() !== "" && (
         <button
           type="submit"
           disabled={adding}
-          className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          className="press animate-pop-in rounded-lg bg-gradient-to-br from-brand-500 to-violet-600 px-3 py-1.5 text-sm font-semibold text-white shadow-[var(--shadow-brand)] disabled:opacity-50"
         >
           {adding ? "Adding…" : "Add column"}
         </button>
@@ -878,32 +935,62 @@ function AddColumn({ onAdd }: { onAdd: (title: string) => Promise<void> }) {
   );
 }
 
-function CenteredNote({ children }: { children: React.ReactNode }) {
-  return (
-    <main className="animate-page-in flex flex-1 items-center justify-center bg-zinc-50 p-8 dark:bg-black">
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">{children}</p>
-    </main>
-  );
-}
-
 /**
  * A quiet live-connection indicator. It answers one question — "is what I'm looking at current?"
  * — so when the socket drops, the user knows the board may be going stale rather than assuming
  * nothing's happening.
+ *
+ * Live is an outward pulse (something is flowing); reconnecting is a spinner (something is being
+ * attempted). Two different shapes of motion for two different meanings, not just two colours.
  */
 function ConnectionDot({ state }: { state: ConnectionState }) {
   const live = state === "live";
   return (
     <span
-      className="inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400"
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors duration-300 ${
+        live
+          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+          : "border-amber-200 bg-amber-50 text-amber-700"
+      }`}
       title={live ? "Live — updates appear as they happen" : "Reconnecting…"}
     >
-      <span
-        className={`h-2 w-2 rounded-full ${
-          live ? "bg-emerald-500" : "animate-pulse bg-amber-500"
-        }`}
-      />
+      {live ? (
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-500 [animation:pulse-ring_2.4s_var(--ease-out-soft)_infinite]" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+        </span>
+      ) : (
+        <span className="animate-spin-slow inline-block h-2.5 w-2.5 rounded-full border-2 border-amber-500 border-t-transparent" />
+      )}
       {live ? "Live" : "Reconnecting…"}
     </span>
+  );
+}
+
+/** The board's loading state: the real layout, in placeholder form, so nothing jumps on arrival. */
+function BoardSkeleton() {
+  return (
+    <main className="animate-fade-in flex min-h-full flex-1 flex-col bg-canvas">
+      <div className="glass flex h-14 items-center gap-3 border-b border-line px-6">
+        <div className="skeleton h-7 w-7 rounded-lg" />
+        <div className="skeleton h-4 w-32 rounded" />
+        <div className="skeleton ml-auto h-7 w-20 rounded-lg" />
+        <div className="skeleton h-7 w-16 rounded-lg" />
+      </div>
+      <div className="flex flex-1 gap-4 p-6" aria-label="Loading board">
+        {[3, 2, 4].map((cards, i) => (
+          <div
+            key={i}
+            className="animate-fade-in flex w-[19rem] shrink-0 flex-col gap-2 rounded-2xl border border-line bg-sunken/60 p-3"
+            style={{ animationDelay: `${i * 90}ms` }}
+          >
+            <div className="skeleton mb-2 h-4 w-24 rounded" />
+            {Array.from({ length: cards }).map((_, c) => (
+              <div key={c} className="skeleton h-16 rounded-xl" />
+            ))}
+          </div>
+        ))}
+      </div>
+    </main>
   );
 }

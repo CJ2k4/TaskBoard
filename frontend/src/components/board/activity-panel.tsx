@@ -5,7 +5,11 @@ import { createPortal } from "react-dom";
 
 import { useAuth } from "@/lib/auth-context";
 import { listActivity, type Activity } from "@/lib/activity";
+import { avatarColor, initials } from "@/lib/avatar";
 import { timeAgo } from "@/lib/time";
+
+/** Entries fetched per request, both on open and per "load more". */
+const PAGE = 50;
 
 /**
  * The board's activity feed (M6): a right-side drawer listing "who did what, when", newest first.
@@ -35,8 +39,6 @@ export function ActivityPanel({
   // Null until we know: true once a "load more" returns a short page (no older history left).
   const [atEnd, setAtEnd] = useState(false);
 
-  const PAGE = 50;
-
   const load = useCallback(async () => {
     setStatus("loading");
     try {
@@ -50,9 +52,25 @@ export function ActivityPanel({
   }, [authFetch, boardId]);
 
   // Load on open and on every refresh signal (a logged change happened while we're watching).
+  // The fetch is inlined rather than calling `load()` so nothing sets state synchronously in the
+  // effect body. `status` already starts as "loading", and a refetch deliberately leaves the
+  // current entries on screen instead of flashing the spinner on every live event.
   useEffect(() => {
-    load();
-  }, [load, refreshSignal]);
+    let cancelled = false;
+    listActivity(authFetch, boardId, { limit: PAGE })
+      .then((page) => {
+        if (cancelled) return;
+        setEntries(page);
+        setAtEnd(page.length < PAGE);
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authFetch, boardId, refreshSignal]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -78,46 +96,70 @@ export function ActivityPanel({
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
+    <div
+      className="animate-fade-in fixed inset-0 z-50 flex justify-end bg-zinc-900/40 backdrop-blur-[3px]"
+      onClick={onClose}
+    >
       <aside
-        className="flex h-full w-full max-w-sm flex-col border-l border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-950"
+        className="animate-slide-in-right flex h-full w-full max-w-sm flex-col border-l border-line bg-paper shadow-[var(--shadow-xl)]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-4 border-b border-zinc-200 p-4 dark:border-zinc-800">
+        <div className="flex items-center justify-between gap-4 border-b border-line p-4">
           <div>
-            <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">Activity</h2>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900">
+              <span aria-hidden className="text-brand-500">
+                ◷
+              </span>
+              Activity
+            </h2>
+            <p className="mt-0.5 text-xs text-zinc-500">
               Everything that&apos;s happened on this board, newest first.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-sm text-zinc-500 transition hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+            className="rounded-lg p-1.5 text-sm text-zinc-500 transition-all duration-200 hover:rotate-90 hover:bg-sunken hover:text-zinc-900"
             aria-label="Close"
           >
             ✕
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="scroll-slim flex-1 overflow-y-auto p-4">
           {status === "loading" && (
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading activity…</p>
+            <div className="flex flex-col gap-4" aria-label="Loading activity">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div key={i} className="flex gap-3">
+                  <div className="skeleton h-6 w-6 shrink-0 rounded-full" />
+                  <div className="flex-1">
+                    <div className="skeleton h-3 w-full rounded" />
+                    <div className="skeleton mt-1.5 h-3 w-1/3 rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
           {status === "error" && (
-            <p className="text-sm text-red-600 dark:text-red-400">
+            <p className="animate-pop-in rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
               Couldn&apos;t load the activity.{" "}
-              <button onClick={load} className="underline">
+              <button onClick={load} className="font-semibold underline underline-offset-2">
                 Retry
               </button>
             </p>
           )}
           {status === "ready" && entries.length === 0 && (
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">Nothing has happened yet.</p>
+            <div className="animate-pop-in flex flex-col items-center gap-2 py-12 text-center">
+              <span aria-hidden className="text-3xl opacity-30">
+                ◷
+              </span>
+              <p className="text-sm text-zinc-500">Nothing has happened yet.</p>
+            </div>
           )}
           {status === "ready" && entries.length > 0 && (
             <>
-              <ul className="flex flex-col gap-3">
+              {/* The timeline rail: one continuous line the entries hang off. */}
+              <ul className="stagger relative flex flex-col gap-3 before:absolute before:bottom-2 before:left-[11px] before:top-2 before:w-px before:bg-line">
                 {entries.map((entry) => (
                   <ActivityRow key={entry.id} entry={entry} currentUserId={currentUserId} />
                 ))}
@@ -126,7 +168,7 @@ export function ActivityPanel({
                 <button
                   onClick={loadMore}
                   disabled={loadingMore}
-                  className="mt-4 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                  className="press mt-4 w-full rounded-lg border border-line-strong px-3 py-2 text-sm font-medium text-zinc-700 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-50"
                 >
                   {loadingMore ? "Loading…" : "Load more"}
                 </button>
@@ -140,7 +182,7 @@ export function ActivityPanel({
   );
 }
 
-/** One "{actor} {summary} · {time}" line. */
+/** One "{actor} {summary} · {time}" line, hung off the timeline rail by its actor's avatar. */
 function ActivityRow({
   entry,
   currentUserId,
@@ -149,15 +191,28 @@ function ActivityRow({
   currentUserId?: string;
 }) {
   // "You" reads better than your own name in your own feed; a deleted account degrades to "Someone".
-  const actor =
-    entry.actorId && entry.actorId === currentUserId
-      ? "You"
-      : (entry.actorName ?? "Someone");
+  const you = Boolean(entry.actorId) && entry.actorId === currentUserId;
+  const actor = you ? "You" : (entry.actorName ?? "Someone");
 
   return (
-    <li className="text-sm text-zinc-700 dark:text-zinc-300">
-      <span className="font-medium text-zinc-900 dark:text-zinc-100">{actor}</span> {entry.summary}
-      <span className="ml-1 text-xs text-zinc-400 dark:text-zinc-500">· {timeAgo(entry.createdAt)}</span>
+    <li className="group/row relative flex gap-3">
+      {/* Sits on top of the rail, so the line reads as threading through each entry. */}
+      <span
+        className="relative z-10 mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white ring-2 ring-paper transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/row:scale-110"
+        style={{
+          backgroundColor: entry.actorId ? avatarColor(entry.actorId) : "#a1a1aa",
+        }}
+        aria-hidden
+      >
+        {initials(entry.actorName ?? "?")}
+      </span>
+      <p className="min-w-0 flex-1 text-sm leading-relaxed text-zinc-700">
+        <span className={`font-semibold ${you ? "text-brand-700" : "text-zinc-900"}`}>{actor}</span>{" "}
+        {entry.summary}
+        <span className="ml-1 whitespace-nowrap font-mono text-xs text-zinc-400">
+          · {timeAgo(entry.createdAt)}
+        </span>
+      </p>
     </li>
   );
 }

@@ -7,9 +7,32 @@
  */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ==========================================================================
+   Design tokens
+   One warm "paper" palette (the app is a physical-feeling surface you move
+   things around on) plus an indigo→violet brand ramp for anything actionable.
+   Exposed through @theme so they become real Tailwind utilities: `bg-paper`,
+   `border-line`, `text-brand-600`, …
+   ========================================================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f4f2ed;
+  --foreground: #1d1c18;
+
+  /* Motion: one vocabulary of easings/durations so everything moves alike. */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-out-soft: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 380ms;
+
+  /* Layered elevation, warm-tinted rather than pure black so it sits on paper. */
+  --shadow-sm: 0 1px 2px rgba(29, 28, 24, 0.06), 0 1px 1px rgba(29, 28, 24, 0.04);
+  --shadow-md: 0 4px 12px -2px rgba(29, 28, 24, 0.08), 0 2px 6px -2px rgba(29, 28, 24, 0.06);
+  --shadow-lg: 0 18px 40px -12px rgba(29, 28, 24, 0.18), 0 6px 14px -6px rgba(29, 28, 24, 0.1);
+  --shadow-xl: 0 32px 64px -16px rgba(29, 28, 24, 0.24), 0 10px 24px -10px rgba(29, 28, 24, 0.12);
+  --shadow-brand: 0 8px 24px -8px rgba(79, 70, 229, 0.45);
 }
 
 @theme inline {
@@ -17,68 +40,298 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Surfaces */
+  --color-paper: #fbfaf7;
+  --color-canvas: #f4f2ed;
+  --color-sunken: #edeae3;
+  --color-line: rgba(29, 28, 24, 0.09);
+  --color-line-strong: rgba(29, 28, 24, 0.16);
+
+  /* Brand */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* Geist is loaded in layout.tsx — actually use it. */
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-/*
- * Small, reusable entrance animations for overlays and expanding controls. `fade-in` is for a
- * backdrop; `pop-in` gives a panel/composer a subtle rise + settle. Both are disabled under
- * prefers-reduced-motion so the UI still works for anyone who asks for less motion.
- */
+::selection {
+  background: var(--color-brand-200, #c7d2fe);
+  color: #1e1b4b;
+}
+
+/* A single, consistent focus ring — visible for keyboards, invisible for mice. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* ==========================================================================
+   Keyframes
+   ========================================================================== */
+
 @keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes pop-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Page-level enter transition: each route animates in on mount, so navigating between the
- * dashboard and a board fades + rises the arriving page into view. */
+/* Page-level enter transition: each route animates in on mount. */
 @keyframes page-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.animate-fade-in {
-  animation: fade-in 150ms ease-out;
+/* Content rising into place — the workhorse for lists, cards, hero copy. */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.animate-pop-in {
-  animation: pop-in 160ms ease-out;
+/* A modal/dialog arriving with a touch of overshoot. */
+@keyframes spring-in {
+  from { opacity: 0; transform: translateY(18px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-.animate-page-in {
-  animation: page-in 220ms ease-out;
+/* Drawers sliding in from the right edge. */
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: translateX(0); }
 }
+
+/* Columns arriving from the side — used across the board's column row. */
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Skeleton loading sweep. */
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* Slow ambient drift for the landing page's background blobs. */
+@keyframes float-slow {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(0, -22px, 0) scale(1.05); }
+}
+
+/* An expanding halo — the "live" pulse behind the connection dot. */
+@keyframes pulse-ring {
+  0% { transform: scale(0.85); opacity: 0.7; }
+  70% { transform: scale(2.2); opacity: 0; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+/* Panning gradient for text and borders that should feel alive. */
+@keyframes gradient-pan {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* A light sweep across a surface on hover. */
+@keyframes sheen {
+  from { transform: translateX(-120%) skewX(-18deg); }
+  to { transform: translateX(220%) skewX(-18deg); }
+}
+
+/* Attention nudge for something that just arrived from another user. */
+@keyframes flash-highlight {
+  0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.5); }
+  100% { box-shadow: 0 0 0 14px rgba(99, 102, 241, 0); }
+}
+
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+
+/* ==========================================================================
+   Animation utilities
+   ========================================================================== */
+
+.animate-fade-in { animation: fade-in var(--dur-fast) ease-out both; }
+.animate-pop-in { animation: pop-in 180ms var(--ease-out-soft) both; }
+.animate-page-in { animation: page-in var(--dur-base) var(--ease-out-soft) both; }
+.animate-rise-in { animation: rise-in 420ms var(--ease-out-soft) both; }
+.animate-spring-in { animation: spring-in 340ms var(--ease-spring) both; }
+.animate-slide-in-right { animation: slide-in-right 300ms var(--ease-out-soft) both; }
+.animate-slide-in-left { animation: slide-in-left 320ms var(--ease-out-soft) both; }
+.animate-float-slow { animation: float-slow 14s ease-in-out infinite; }
+.animate-flash { animation: flash-highlight 900ms var(--ease-out-soft); }
+.animate-spin-slow { animation: spin-slow 1.4s linear infinite; }
+
+/*
+ * Stagger: give a container `.stagger` and its children animate in sequence.
+ * Depth is capped at 12 — past that everything shares the last delay, which
+ * keeps a long list from taking a visibly silly amount of time to appear.
+ */
+.stagger > * { animation: rise-in 460ms var(--ease-out-soft) both; }
+.stagger > *:nth-child(1) { animation-delay: 20ms; }
+.stagger > *:nth-child(2) { animation-delay: 60ms; }
+.stagger > *:nth-child(3) { animation-delay: 100ms; }
+.stagger > *:nth-child(4) { animation-delay: 140ms; }
+.stagger > *:nth-child(5) { animation-delay: 180ms; }
+.stagger > *:nth-child(6) { animation-delay: 220ms; }
+.stagger > *:nth-child(7) { animation-delay: 260ms; }
+.stagger > *:nth-child(8) { animation-delay: 300ms; }
+.stagger > *:nth-child(9) { animation-delay: 340ms; }
+.stagger > *:nth-child(10) { animation-delay: 380ms; }
+.stagger > *:nth-child(11) { animation-delay: 420ms; }
+.stagger > *:nth-child(n + 12) { animation-delay: 460ms; }
+
+/* ==========================================================================
+   Interaction utilities
+   ========================================================================== */
+
+/*
+ * `lift` — the standard hover response for a clickable surface: rise a little,
+ * deepen the shadow, warm the border. Transitions (not animations) so the
+ * element settles back gracefully when the pointer leaves.
+ */
+.lift {
+  transition:
+    transform var(--dur-base) var(--ease-out-soft),
+    box-shadow var(--dur-base) var(--ease-out-soft),
+    border-color var(--dur-base) var(--ease-out-soft),
+    background-color var(--dur-base) var(--ease-out-soft);
+  will-change: transform;
+}
+.lift:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lg);
+}
+.lift:active {
+  transform: translateY(-1px);
+  transition-duration: 90ms;
+}
+
+/* `press` — for buttons: a small, quick squash so a click feels physical. */
+.press {
+  transition:
+    transform 120ms var(--ease-out-soft),
+    box-shadow var(--dur-base) var(--ease-out-soft),
+    background-color var(--dur-fast) ease-out,
+    border-color var(--dur-fast) ease-out,
+    color var(--dur-fast) ease-out,
+    opacity var(--dur-fast) ease-out;
+}
+.press:hover { transform: translateY(-1px); }
+.press:active { transform: translateY(0) scale(0.97); }
+.press:disabled { transform: none; }
+
+/*
+ * `sheen` — a diagonal light sweep on hover. The pseudo-element is clipped by
+ * the host's own overflow, so the host needs `relative overflow-hidden`.
+ */
+.sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-120%) skewX(-18deg);
+  pointer-events: none;
+  opacity: 0;
+}
+.sheen:hover::after {
+  opacity: 1;
+  animation: sheen 720ms var(--ease-out-soft);
+}
+
+/* Animated gradient text for hero headlines. */
+.text-gradient {
+  background: linear-gradient(100deg, #1d1c18 0%, #4f46e5 45%, #7c3aed 60%, #1d1c18 100%);
+  background-size: 220% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: gradient-pan 9s ease-in-out infinite;
+}
+
+/* Frosted surface for sticky headers sitting over scrolling content. */
+.glass {
+  background: rgba(251, 250, 247, 0.78);
+  backdrop-filter: blur(14px) saturate(180%);
+  -webkit-backdrop-filter: blur(14px) saturate(180%);
+}
+
+/* Loading placeholder blocks. */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(29, 28, 24, 0.05) 25%,
+    rgba(29, 28, 24, 0.1) 37%,
+    rgba(29, 28, 24, 0.05) 63%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/*
+ * Board scroll areas: a slim scrollbar that doesn't shout. The board's column
+ * row is horizontally scrollable, and the default macOS/Windows bar is a heavy
+ * visual interruption right under the cards.
+ */
+.scroll-slim {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(29, 28, 24, 0.2) transparent;
+}
+.scroll-slim::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scroll-slim::-webkit-scrollbar-track { background: transparent; }
+.scroll-slim::-webkit-scrollbar-thumb {
+  background: rgba(29, 28, 24, 0.18);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.scroll-slim::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: rgba(29, 28, 24, 0.32); }
+
+/* ==========================================================================
+   Reduced motion
+   Anyone who asks for less motion gets a static UI: no entrances, no ambient
+   drift, no hover translation. Opacity-only transitions are kept so state
+   changes are still legible.
+   ========================================================================== */
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-fade-in,
-  .animate-pop-in,
-  .animate-page-in {
-    animation: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+
+  .lift:hover,
+  .lift:active,
+  .press:hover,
+  .press:active {
+    transform: none;
+  }
+
+  .sheen:hover::after { animation: none; opacity: 0; }
 }

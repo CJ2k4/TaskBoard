@@ -38,14 +38,18 @@ export function PresenceStack({
   const overflow = ordered.length - shown.length;
 
   return (
-    <div className="flex items-center" aria-label={`${ordered.length} viewing`}>
+    <div className="group/presence flex shrink-0 items-center" aria-label={`${ordered.length} viewing`}>
       {shown.map((v) => {
         const you = v.userId === currentUserId;
         return (
+          // Keyed by userId so React mounts a *new* node when someone arrives — which is what
+          // makes the spring entrance fire for the newcomer only, not the whole stack.
           <span
             key={v.userId}
-            title={you ? `${v.name} (you)` : v.name}
-            className="-ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-zinc-50 text-[10px] font-semibold text-white first:ml-0 dark:border-black"
+            title={you ? `${v.name} (you)` : `${v.name} is viewing`}
+            className={`animate-spring-in -ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-paper text-[10px] font-semibold text-white shadow-[var(--shadow-sm)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] first:ml-0 hover:z-10 hover:scale-125 group-hover/presence:ml-0.5 group-hover/presence:first:ml-0 ${
+              you ? "ring-1 ring-brand-400 ring-offset-1 ring-offset-paper" : ""
+            }`}
             style={{ backgroundColor: avatarColor(v.userId) }}
           >
             {initials(v.name)}
@@ -55,7 +59,7 @@ export function PresenceStack({
       {overflow > 0 && (
         <span
           title={ordered.slice(MAX_AVATARS).map((v) => v.name).join(", ")}
-          className="-ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-zinc-50 bg-zinc-400 text-[10px] font-semibold text-white dark:border-black dark:bg-zinc-600"
+          className="animate-spring-in -ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-paper bg-zinc-400 text-[10px] font-semibold text-white transition-all duration-300 group-hover/presence:ml-0.5"
         >
           +{overflow}
         </span>
