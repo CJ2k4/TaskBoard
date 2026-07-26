@@ -2522,6 +2522,93 @@ real-time were already funnelled through `CardResponse` + the board guard + the 
 a two-column schema change reached the live multi-user UI without inventing a single new endpoint,
 event type, or broadcast path.
 
+### Step P.3 — Continuous integration (and a lockfile that only broke on Linux) · _2026-07-26_
+
+Everything up to here was verified by *remembering* to run the right command. **CI** — continuous
+integration — is a robot that stops relying on memory: on every push it checks out the repo, builds
+it, runs the tests, and reports pass/fail on the commit.
+
+**Why this project needs it more than most.** Two reasons, both structural:
+
+1. The backend suite is almost entirely `@SpringBootTest` integration tests, so it needs a **live
+   Postgres and JDK 21**. If the DB container isn't up the context won't even start — which makes it
+   tempting to skip `./mvnw test` on a frontend-only change, and vice versa.
+2. The two halves are separate builds that **share a wire format**. Rename a field on
+   `CardResponse` and the server still compiles perfectly; the break lands in `frontend/src/lib/*.ts`
+   and stays invisible until someone happens to run `tsc`.
+
+**The workflow.** One file, `.github/workflows/ci.yml`, with two jobs that run **in parallel** — a
+red run then points straight at the guilty half, and the wall-clock is the slower of the two rather
+than their sum. The backend job declares a `services.postgres` container; the neat part is that its
+credentials are copied from `docker-compose.yml`, which is exactly what
+`application.properties` already defaults to (`jdbc:postgresql://localhost:5432/taskboard`). There is
+no `src/test/resources/application*.properties` overriding it — so **the test suite ran in CI with
+zero configuration changes**. It runs `./mvnw -B clean verify` (not `test`) so a green run also
+proves the jar still packages. The frontend job runs `npm ci` → `typecheck` → `lint` → `build` on
+Node 22, with placeholder env vars so the build never depends on a real secret.
+
+**What it immediately found.** Turning lint on surfaced six errors from the React Compiler–era rules
+that ship with `eslint-config-next` 16 — five `set-state-in-effect` and one `refs`. They weren't
+bugs, but fixing them properly turned out to be a genuine improvement. The old shape was
+`useEffect(() => { load(); }, [load])`; the new one inlines the fetch as a promise chain, sets state
+only inside `.then`/`.catch`, and guards it with a `cancelled` flag:
+
+```ts
+useEffect(() => {
+  let cancelled = false;
+  listBoards(authFetch)
+    .then((rows) => { if (cancelled) return; setBoards(rows); setStatus("ready"); })
+    .catch(() => { if (!cancelled) setStatus("error"); });
+  return () => { cancelled = true; };
+}, [authFetch]);
+```
+
+That `cancelled` flag closes a real race the old code had — a slow response landing *after* the
+component unmounted or after the board id changed. The shape wasn't invented for the linter, either:
+the `listMembers` effect on the board page already looked like this and was the one effect the rule
+never complained about. `load` stays for the imperative paths (the retry button, the realtime
+`onResync`).
+
+**Then the part worth the whole section.** The first CI run went red on something no amount of local
+testing would have caught. `npm ci` failed:
+
+```
+npm error `npm ci` can only install packages when your package.json and
+npm error package-lock.json are in sync.
+npm error Missing: @emnapi/runtime@1.11.3 from lock file
+```
+
+The distinction: **`npm install` is lenient** — it quietly reconciles a drifted lockfile and moves
+on. **`npm ci` is strict** — it refuses, because a lockfile that doesn't match `package.json` means
+the install isn't reproducible. Local development had never noticed because `npm install` kept
+papering over it, and an existing `node_modules` masked the rest.
+
+Running `npm install` to resync it *still* failed on the second run — and the reason is the actually
+interesting bit. `@emnapi/runtime` and `@emnapi/core` are **optional, platform-specific** transitive
+dependencies (wasm/linux variants). npm resolving the tree on macOS had simply omitted the ones
+macOS can't use, producing a lockfile that was internally consistent *on darwin* and incomplete on
+the Linux runner. The fix is to generate the lockfile somewhere that sees every platform:
+
+```bash
+docker run --rm -v "$PWD":/w -w /w node:22-alpine \
+  sh -c "npm install --package-lock-only"
+```
+
+The regenerated lockfile carries **both** platforms — `darwin-arm64`/`darwin-x64` *and*
+`linux-x64-gnu`/`linux-arm64-gnu` — and `npm ci` passes on macOS and Linux alike.
+
+```bash
+# what CI runs, reproduced locally — note `npm ci`, not `npm install`
+cd server   && ./mvnw -B clean verify        # 113 tests green, jar packaged
+cd frontend && npm ci && npm run typecheck && npm run lint && npm run build
+```
+
+The lesson worth keeping: **CI's value isn't running tests you could have run yourself — it's
+running them somewhere that isn't your laptop.** The lockfile bug was invisible on macOS by
+construction, would have broken every fresh clone and every future deploy, and was found within
+ninety seconds of switching CI on. A green badge means "this builds on a machine that has never seen
+your `node_modules`", which is a much stronger claim than "it works here".
+
 ---
 
 ## Quick command reference
@@ -2544,4 +2631,11 @@ docker compose down -v      # stop it AND delete all data (fresh start)
 npm run dev                             # run the Next.js dev server (:3000)
 npm run build                           # production build + full type-check
 npm run lint                            # eslint
+npm run typecheck                       # tsc --noEmit on its own
+npm ci                                  # clean install, exactly as CI does (strict about the lockfile)
+
+# CI (run from anywhere in the repo)
+gh run list --limit 5                   # recent workflow runs and their status
+gh run watch                            # follow the run in progress
+gh run view --log-failed                # just the failing steps' logs
 ```
