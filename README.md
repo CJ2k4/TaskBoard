@@ -69,14 +69,27 @@ deploy the backend with a placeholder origin first and correct it at the end.
      -e DB_USERNAME=taskboard -e DB_PASSWORD=taskboard taskboard-api
    curl localhost:8081/api/health   # {"status":"ok"}
    ```
-3. **Neon → create a project.** Copy the connection string and convert it to JDBC form — Neon shows
-   a libpq URI, which pgJDBC will not accept verbatim:
+3. **Neon → create a project.** Choose **PostgreSQL 16**, matching `docker-compose.yml` and CI —
+   Flyway 11.7.2 supports up to 17 and warns on 18 (*"support has not been tested"*), and matching
+   dev is what makes a production bug reproducible locally. Then convert the connection string to
+   JDBC form; Neon shows a libpq URI, which pgJDBC will not accept verbatim:
    ```
-   postgresql://alice:pw@ep-x-y.aws.neon.tech/taskboard?sslmode=require&channel_binding=require
-   jdbc:postgresql://ep-x-y.aws.neon.tech/taskboard?sslmode=require
+   postgresql://alice:pw@ep-x-y-pooler.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+   jdbc:postgresql://ep-x-y.aws.neon.tech/neondb?sslmode=require
    ```
-   Drop the credentials into `DB_USERNAME` / `DB_PASSWORD`, and drop `channel_binding` entirely —
-   that is libpq's spelling, and pgJDBC's is `channelBinding`. Keep `sslmode=require`.
+   Three edits, each of which fails differently if missed:
+   - **Credentials out of the URL** into `DB_USERNAME` / `DB_PASSWORD`. Leaving a bare `@` behind
+     makes pgJDBC parse an empty username.
+   - **Drop `channel_binding`** — libpq's spelling; pgJDBC's is `channelBinding`, and it rejects the
+     snake_case one.
+   - **Use the direct endpoint, not `-pooler`.** Neon's pooled endpoint is PgBouncer in transaction
+     mode, where advisory locks are unsupported and Neon itself recommends direct connections for
+     schema migrations — and Flyway takes a lock before migrating. The pooler solves a problem this
+     app doesn't have (thousands of short-lived serverless connections); one long-running JVM with a
+     5-connection Hikari pool wants the direct endpoint, which allows ~100.
+
+   Keep `sslmode=require`. Verify before deploying by running the image against it locally — the boot
+   log should report `PostgreSQL 16.x` and `Successfully applied 8 migrations`.
 4. **Back4App → Containers → deploy from this repo.** Root Directory **`server`** (this is also the
    Docker build context, which is why the Dockerfile lives there), branch `main`. Then in App
    Settings set the port to **8080** and the health check to **`/api/health`**, and add the
