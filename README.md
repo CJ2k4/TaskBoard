@@ -38,60 +38,105 @@ cd frontend && npm run typecheck && npm run lint && npm run build
 
 ## Deploying
 
-The backend ships as a **Docker image to a Render web service** alongside **Render managed Postgres**
-(same region, private networking); the frontend deploys to **Vercel** from the `frontend/` root
-directory. The deployed shape is declared in [`render.yaml`](render.yaml). There is **no CD** —
-deploys are a deliberate action on both sides.
+Three providers, because no one of them does all three jobs well:
+
+| Piece | Where | How |
+|---|---|---|
+| Backend | **Back4App Containers** | Docker image built from [`server/Dockerfile`](server/Dockerfile) |
+| Database | **Neon** | serverless Postgres, reached over TLS from the container |
+| Frontend | **Vercel** | Next.js, from the `frontend/` root directory |
+
+Back4App has no managed Postgres for containers (its PostgreSQL offering belongs to the Parse BaaS
+product, which is Parse's own schema rather than a JDBC target), so the database lives elsewhere and
+the connection crosses the public internet — hence `sslmode=require` and the pool tuning in
+`application.properties`. There is **no CD**; deploys are a deliberate action.
 
 ### First deploy
 
-The three pieces depend on each other in a cycle: the backend's CORS wants the frontend origin, the
+The pieces depend on each other in a cycle: the backend's CORS wants the frontend origin, the
 frontend **bakes in** the backend origin at build time, and Google Sign-In needs the frontend origin
 registered before anyone can log in. It breaks because only one of the three is *build*-time — so
-deploy the backend with a placeholder first.
+deploy the backend with a placeholder origin first and correct it at the end.
 
-1. **Push to `main`** and confirm CI is green. Both platforms build from GitHub, not from a laptop.
-2. **Smoke-test the image locally** (with `docker compose up -d` running):
+1. **Push to `main`** and confirm CI is green. Every platform builds from GitHub, not from a laptop.
+2. **Smoke-test the image under the target's real limits** (with `docker compose up -d` running).
+   The resource flags are the point — this is what catches an OOM before Back4App does:
    ```bash
    cd server
    docker build -t taskboard-api .
-   docker run --rm -p 8081:8081 -e PORT=8081 \
+   docker run --rm --memory=256m --cpus=0.25 -p 8081:8081 -e PORT=8081 \
      -e DB_HOST=host.docker.internal -e DB_PORT=5432 -e DB_NAME=taskboard \
      -e DB_USERNAME=taskboard -e DB_PASSWORD=taskboard taskboard-api
    curl localhost:8081/api/health   # {"status":"ok"}
    ```
-3. **Render → New → Blueprint →** this repo. It prompts for `JWT_SECRET`
-   (`openssl rand -base64 48`), `GOOGLE_CLIENT_ID`, and `APP_CORS_ALLOWED_ORIGINS` — set that last
-   one to `http://localhost:3000` as a deliberate placeholder. Check the logs for the Flyway V1–V8
-   migrations, then `curl https://taskboard-api.onrender.com/api/health`.
-4. **Vercel → Import Project.** Root Directory `frontend`, Node 22, and both `NEXT_PUBLIC_*` vars
-   below set **before the first build**. Note the production URL.
-5. **Google Cloud Console → Credentials → the OAuth 2.0 Web client → Authorized JavaScript origins**
+3. **Neon → create a project.** Copy the connection string and convert it to JDBC form — Neon shows
+   a libpq URI, which pgJDBC will not accept verbatim:
+   ```
+   postgresql://alice:pw@ep-x-y.aws.neon.tech/taskboard?sslmode=require&channel_binding=require
+   jdbc:postgresql://ep-x-y.aws.neon.tech/taskboard?sslmode=require
+   ```
+   Drop the credentials into `DB_USERNAME` / `DB_PASSWORD`, and drop `channel_binding` entirely —
+   that is libpq's spelling, and pgJDBC's is `channelBinding`. Keep `sslmode=require`.
+4. **Back4App → Containers → deploy from this repo.** Root Directory **`server`** (this is also the
+   Docker build context, which is why the Dockerfile lives there), branch `main`. Then in App
+   Settings set the port to **8080** and the health check to **`/api/health`**, and add the
+   environment variables below. Watch the logs for the Flyway `V1`–`V8` migrations against the fresh
+   Neon database, then `curl https://<your-app>.b4a.run/api/health`.
+5. **Vercel → Import Project.** Root Directory `frontend`, Node 22, and both `NEXT_PUBLIC_*` vars
+   set **before the first build** — they are inlined into the bundle, so setting them afterwards
+   needs a redeploy, not a restart. Note the production URL.
+6. **Google Cloud Console → Credentials → the OAuth 2.0 Web client → Authorized JavaScript origins**
    → add the exact production frontend origin (scheme included, no path, no trailing slash). Sign-in
    is Google-only, so **until this propagates nobody can log in.** No redirect URI is needed.
-6. **Render → taskboard-api → Environment** → set `APP_CORS_ALLOWED_ORIGINS` to the Vercel production
-   URL. The service restarts; no rebuild and no frontend redeploy.
+7. **Back4App → Environment** → set `APP_CORS_ALLOWED_ORIGINS` to the Vercel production URL,
+   replacing the placeholder. The container restarts; no rebuild and no frontend redeploy.
 
-Adding a custom domain later means redoing steps 5 and 6 with the new origin.
+Adding a custom domain later means redoing steps 6 and 7 with the new origin.
 
 ### Environment variables
 
 | Variable | Where | Required | Notes |
 |---|---|---|---|
-| `PORT` | Render | injected | Render sets it; read via `server.port=${PORT:8080}` |
-| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USERNAME` / `DB_PASSWORD` | Render | yes | wired from the managed DB by `render.yaml` |
-| `DB_URL` | local / CI | no | full JDBC URL; overrides the composed one |
-| `SPRING_PROFILES_ACTIVE` | Render | yes (`prod`) | arms `JwtService`'s weak-secret guard — that is its only job |
-| `JWT_SECRET` | Render | yes | ≥ 32 bytes. Rotating it logs everyone out |
-| `JWT_ACCESS_TTL` / `JWT_REFRESH_TTL` | Render | no | ISO-8601; default `PT15M` / `P7D` |
-| `GOOGLE_CLIENT_ID` | Render | yes | must equal the frontend's |
-| `APP_CORS_ALLOWED_ORIGINS` | Render | yes | comma-separated **exact** origins, **no trailing slash**; covers both REST and the `/ws` handshake |
+| `DB_URL` | Back4App | yes | full JDBC URL incl. `?sslmode=require`. See step 3 for the conversion |
+| `DB_USERNAME` / `DB_PASSWORD` | Back4App | yes | Neon's role and password, kept out of the URL |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` | — | no | alternative to `DB_URL` when a platform exposes the parts separately; local dev's default |
+| `SPRING_PROFILES_ACTIVE` | Back4App | yes (`prod`) | arms `JwtService`'s weak-secret guard — that is its only job |
+| `JWT_SECRET` | Back4App | yes | ≥ 32 bytes (`openssl rand -base64 48`). Rotating it logs everyone out |
+| `JWT_ACCESS_TTL` / `JWT_REFRESH_TTL` | Back4App | no | ISO-8601; default `PT15M` / `P7D` |
+| `GOOGLE_CLIENT_ID` | Back4App | yes | must equal the frontend's |
+| `APP_CORS_ALLOWED_ORIGINS` | Back4App | yes | comma-separated **exact** origins, **no trailing slash**; covers both REST and the `/ws` handshake |
+| `PORT` | — | no | Back4App does not inject it; the `8080` default binds, matching `EXPOSE` and App Settings |
+| `JAVA_OPTS` | Back4App | no | overrides the Dockerfile's tuned flags without a rebuild — see below |
+| `DB_POOL_SIZE` / `TOMCAT_MAX_THREADS` | Back4App | no | default `5` / `25`, both sized for a 256 MB container |
 | `NEXT_PUBLIC_API_URL` | Vercel | yes | **inlined at build time**, no trailing slash. `wss://` is derived from it |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Vercel | yes | **inlined at build time**; unset = nobody can sign in |
 
 Preview deployments won't be able to sign in: Google's Authorized JavaScript origins accepts no
 wildcards, so a fresh preview hostname fails with `origin_mismatch`. For a long-lived branch, add its
 deterministic Vercel branch alias to *both* `APP_CORS_ALLOWED_ORIGINS` and the Google client.
+
+### Fitting in 256 MB
+
+Back4App's free plan is 0.25 CPU / 256 MB, which is genuinely tight for Spring Boot + Hibernate.
+Measured locally with `--memory=256m --cpus=0.25` under load — six concurrent users each creating a
+board, three columns and 24 cards, then re-reading the whole board:
+
+| `JAVA_OPTS` | Container | Startup | Idle | Peak under load |
+|---|---|---|---|---|
+| `-XX:MaxRAMPercentage=75` | 256 MB | 120 s | 213 MB | **240 MB (94%)** — 16 MB from the kill |
+| tuned (the Dockerfile default) | 256 MB | **48 s** | 195 MB | **210 MB (82%)** |
+| tuned, `-Xmx256m` | 512 MB | 48 s | 198 MB | 214 MB (42%) |
+
+The flag doing the work is the hard `-Xmx128m`. A percentage-of-RAM heap looks right and isn't: 75%
+of 256 MB reserves 192 MB for the heap and leaves nothing for the ~100 MB of metaspace Spring and
+Hibernate need, which is how the first row ends up 16 MB from an OOM kill under ordinary use.
+Capping the heap forces GC to work harder *instead of* the kernel killing the container.
+`-XX:TieredStopAtLevel=1` is what cut startup by 60%, which matters because a slow boot fails the
+deploy health check.
+
+The third row is the one that decides the plan: doubling the memory moves peak usage by 4 MB,
+because the app's working set is simply ~210 MB. **Paying for the 512 MB plan buys nothing here** —
+if you outgrow the free tier it will be CPU you want, not RAM.
 
 ### Known constraints
 
@@ -104,9 +149,12 @@ deterministic Vercel branch alias to *both* `APP_CORS_ALLOWED_ORIGINS` and the G
   database at startup.
 - Refresh tokens live in `localStorage` and are **not revocable** (no `jti`, no denylist) — logout is
   client-side, and rotating `JWT_SECRET` is the only kill switch.
-- On Render's free tier the service spins down after ~15 min idle: the next request pays a JVM +
-  Flyway cold start and open sockets are dropped (the client reconnects and resyncs). Free Postgres
-  instances expire and are deleted, with no backups worth relying on.
+- **Neon autosuspends after ~5 minutes idle.** The first query afterwards pays a resume of roughly a
+  second, which is why `connection-timeout` is 30 s rather than the 250 ms default — a timeout there
+  would turn a normal cold start into a visible error.
+- **Free-tier ceilings that are time-based, not usage-based:** Back4App allows 600 active hours per
+  month against a 720-hour month, and Neon 100 compute-hours per project. Exceeding either suspends
+  the service until the next cycle.
 
 ## Docs
 

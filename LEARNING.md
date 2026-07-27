@@ -2609,15 +2609,21 @@ construction, would have broken every fresh clone and every future deploy, and w
 ninety seconds of switching CI on. A green badge means "this builds on a machine that has never seen
 your `node_modules`", which is a much stronger claim than "it works here".
 
-### Step P.4 — Shipping it: one Dockerfile, two platforms, and a three-way chicken-and-egg · _2026-07-26_
+### Step P.4 — Shipping it: one Dockerfile, three platforms, and a three-way chicken-and-egg · _2026-07-26_
 
 CI proved the app **builds** on a machine that isn't your laptop. Deploying proves it **runs** on
 one — and that turns out to surface a completely different class of assumption. Nothing about how
 TaskBoard works changed in this step. What changed is which assumptions were still allowed to stay
 implicit.
 
-**Why the backend needs a Dockerfile at all.** Render has no native Java runtime, so the unit of
-deployment isn't "a jar" — it's an image. Three decisions inside it, each with a reason:
+The shape it landed in: **Back4App Containers** runs the backend image, **Neon** hosts Postgres, and
+**Vercel** serves the frontend. Three providers rather than two because Back4App has no managed
+Postgres for containers — its PostgreSQL offering belongs to the Parse BaaS product, which is Parse's
+own schema, not something you can point JDBC and Flyway at. That single fact is what moved the
+database onto the public internet and made TLS and pool tuning matter (more below).
+
+**Why the backend needs a Dockerfile at all.** These platforms have no native Java runtime, so the
+unit of deployment isn't "a jar" — it's an image. Three decisions inside it, each with a reason:
 
 1. **Two stages.** The JDK is a *build* tool. Once the jar exists, the compiler, `javadoc` and
    friends are dead weight and extra attack surface, so the runtime stage starts from
@@ -2638,11 +2644,11 @@ needs `curl` and `unzip`, which that base image doesn't reliably ship. The fix i
 bootstrapper, not a Maven.** It guarantees everyone uses the same Maven; it does not mean Maven is
 present.
 
-**`PORT` is not `SERVER_PORT`.** Render, like most platforms, tells the app which port to bind by
-injecting `$PORT`. Spring's relaxed binding maps the env var `SERVER_PORT` onto the property
-`server.port` — but a bare `PORT` is not a Spring property name at all, so it is silently ignored.
-The app binds 8080, the platform routes to something else, and the health check times out **with a
-completely clean startup log**. One line fixes it:
+**`PORT` is not `SERVER_PORT`.** Most platforms tell the app which port to bind by injecting `$PORT`.
+Spring's relaxed binding maps the env var `SERVER_PORT` onto the property `server.port` — but a bare
+`PORT` is not a Spring property name at all, so it is silently ignored. The app binds 8080, the
+platform routes to something else, and the health check times out **with a completely clean startup
+log**. One line fixes it:
 
 ```properties
 server.port=${PORT:8080}
@@ -2654,6 +2660,12 @@ philosophy the project already had: a default that's right locally, an env var t
 production. `${PORT:8080}` keeps `./mvnw spring-boot:run` byte-for-byte unchanged. (The second line
 is the sibling assumption: behind a TLS-terminating proxy, the app receives plain http and only
 learns the truth from `X-Forwarded-Proto`.)
+
+Back4App turns out **not** to inject `$PORT` — you declare the port with `EXPOSE` and pick it in App
+Settings — so the `:8080` default is what actually binds there. Which is the nicer half of the
+lesson: a defaulted env var costs nothing when the platform doesn't set it, and the same image now
+runs unmodified on a platform that does. The failure mode it guards against is expensive; the guard
+is free.
 
 **The genuinely interesting part: a three-way cycle.** Deploying two apps that talk to each other
 looks circular:
@@ -2675,37 +2687,103 @@ origins* **accepts no wildcards**, so a preview on a fresh hostname fails with `
 matter how permissive the backend is. A wildcard would buy a working landing page, a broken login,
 and a wider credentialed-CORS surface. Previews stay signed-out; that's the honest state.
 
-**A constraint that finally got written down.** `render.yaml` carries a `# !! DO NOT RAISE ABOVE 1 !!`
-comment, because **three unrelated design choices each independently forbid a second instance**: the
-STOMP broker is Spring's in-JVM simple broker (instance A's broadcast never reaches instance B's
-subscribers), `PresenceTracker` is per-process `ConcurrentHashMap`s, and `BinPurgeJob`'s `@Scheduled`
-purge has no leader election. None of them *look* like scaling decisions from inside their own file —
-which is exactly why the ceiling belongs in the deployment config, next to the number it constrains.
+**A constraint that finally got written down.** **Three unrelated design choices each independently
+forbid a second instance**: the STOMP broker is Spring's in-JVM simple broker (instance A's broadcast
+never reaches instance B's subscribers), `PresenceTracker` is per-process `ConcurrentHashMap`s, and
+`BinPurgeJob`'s `@Scheduled` purge has no leader election. None of them *look* like scaling decisions
+from inside their own file — which is exactly why the ceiling belongs written down where the instance
+count is set, not buried in the three files that caused it.
 
 The same instinct explains what was **not** changed: `/api/health` still returns `{"status":"ok"}`
-without touching the database. A deeper probe sounds strictly better until you notice Render restarts
-instances that fail it — turning a thirty-second Postgres hiccup into a restart that drops every open
-board's WebSocket. Flyway already proves the database at startup; the probe's job is only to answer
-"is this process alive?".
+without touching the database. A deeper probe sounds strictly better until you notice platforms
+restart containers that fail it — turning a thirty-second Postgres hiccup into a restart that drops
+every open board's WebSocket. Flyway already proves the database at startup; the probe's job is only
+to answer "is this process alive?".
+
+**Where the interesting work actually was: 256 MB.** The free container is 0.25 CPU / 256 MB, and
+Spring Boot with Hibernate is not a small tenant. The committed setting was the one every guide
+recommends:
+
+```
+-XX:MaxRAMPercentage=75.0
+```
+
+It sounds obviously correct — size the heap from the container's real limit rather than hard-coding
+a number. Run it under the actual constraint (`docker run --memory=256m --cpus=0.25`, which
+reproduces the plan exactly on a laptop) and it does boot… after **120 seconds**, sitting at
+**213 MB of 256 MB before serving a single request**. Put six concurrent users through it and it
+peaks at **240 MB — sixteen megabytes from being killed**, on a workload smaller than the app is
+designed for.
+
+The flaw is that a percentage-of-RAM heap only reasons about the **heap**. 75% of 256 MB reserves
+192 MB, and Spring + Hibernate need roughly 100 MB of **metaspace** — class metadata, which lives
+outside the heap and which that flag knows nothing about. The two are being promised the same memory.
+
+The fix is the thing that looks cruder and is smarter:
+
+```
+-Xmx128m -XX:MaxMetaspaceSize=128m -Xss512k -XX:TieredStopAtLevel=1 -XX:+UseSerialGC
+```
+
+A hard heap cap **creates** the headroom, because the heap now physically cannot grow into the space
+metaspace is using. GC works harder instead of the kernel OOM-killing the container — and "GC works
+harder" is a slowdown you can measure, where an OOM kill is an outage you have to diagnose from a
+truncated log. `-XX:TieredStopAtLevel=1` (C1 only, skip the optimising compiler) cut startup from
+120 s to **48 s**, which is not a nicety: a boot slower than the platform's deploy health-check
+window is a deploy that fails.
+
+| `JAVA_OPTS` | Startup | Idle | Peak under load |
+|---|---|---|---|
+| `-XX:MaxRAMPercentage=75` | 120 s | 213 MB | 240 MB (94%) |
+| tuned | **48 s** | 195 MB | **210 MB (82%)** |
+
+Then the result that decided the plan. Running the same six-user load against a **512 MB** container
+peaked at **214 MB** — four megabytes more than the 256 MB box used. The app's working set is simply
+~210 MB, so doubling the memory buys nothing. Without measuring, the natural move on seeing 94% is to
+pay for the bigger plan; the numbers say the bigger plan fixes a different problem than the one you
+have. **The measurement didn't just tune a flag — it turned a $5/month guess into a decision.**
+
+The general lesson, and the reason this belongs in a learning log: **resource limits are testable
+locally.** `--memory` and `--cpus` are two flags. Everyone treats "will it fit?" as something you
+discover in the platform's dashboard after the deploy fails, and it is a twenty-minute experiment
+you can run before you ever open the dashboard.
+
+**One last footgun, at the database seam.** Neon hands you a connection string and it does not work
+in Java:
+
+```
+postgresql://user:pw@host/db?sslmode=require&channel_binding=require    # what Neon shows you
+jdbc:postgresql://host/db?sslmode=require                               # what pgJDBC accepts
+```
+
+Beyond the `jdbc:` prefix, `channel_binding` is **libpq's** parameter spelling; the JDBC driver calls
+it `channelBinding` and rejects the snake_case one. Two libraries, same database, different names for
+the same option — and the error surfaces as a connection failure at startup, well away from the typo.
+The other half of moving the database off-box: the pool now spans the public internet, so Hikari's
+defaults (10 connections held forever, 250 ms connection timeout) are wrong in both directions — too
+many connections for a quarter-CPU box, too impatient for a Neon compute that autosuspends after five
+minutes and needs a second to wake.
 
 ```bash
-# the local smoke test that catches the port bug before Render does
+# the local smoke test — the resource flags are the point, not an afterthought
 cd server
 docker build -t taskboard-api .
-docker run --rm -p 8081:8081 -e PORT=8081 \
+docker run --rm --memory=256m --cpus=0.25 -p 8081:8081 -e PORT=8081 \
   -e DB_HOST=host.docker.internal -e DB_PORT=5432 -e DB_NAME=taskboard \
   -e DB_USERNAME=taskboard -e DB_PASSWORD=taskboard taskboard-api
 curl localhost:8081/api/health
 
 # after deploying — does CORS actually admit the real frontend origin?
 curl -i -H "Origin: https://<your-app>.vercel.app" \
-  https://taskboard-api.onrender.com/api/health
+  https://<your-app>.b4a.run/api/health
 ```
 
 The lesson worth keeping: **deploying didn't change how the app works — it changed which assumptions
 were allowed to stay implicit.** "It listens on 8080", "the frontend is at localhost:3000", "there's
-one of me" were all true, all load-bearing, and all invisible until a platform disagreed. Config
-that's env-driven from day one is what turns each of those from a rewrite into a line.
+one of me", "there's enough memory" were all true, all load-bearing, and all invisible until a
+platform disagreed. Config that's env-driven from day one is what turns each of those from a rewrite
+into a line — and a container runtime on your laptop is what turns the last one from a surprise into
+a table.
 
 ---
 
@@ -2739,9 +2817,11 @@ gh run view --log-failed                # just the failing steps' logs
 
 # Deploy (see README.md for the full runbook)
 docker build -t taskboard-api server/   # build the backend image locally
-docker run --rm -p 8081:8081 -e PORT=8081 \
+docker run --rm --memory=256m --cpus=0.25 -p 8081:8081 -e PORT=8081 \
   -e DB_HOST=host.docker.internal -e DB_PORT=5432 -e DB_NAME=taskboard \
   -e DB_USERNAME=taskboard -e DB_PASSWORD=taskboard taskboard-api
-curl https://taskboard-api.onrender.com/api/health   # is the deployed backend up?
-# Deploys themselves are triggered from the Render and Vercel dashboards — there is no CD.
+#   ^ --memory/--cpus reproduce Back4App's free plan; drop them for an unconstrained run
+docker stats --no-stream taskboard-api  # how close to the limit is it actually running?
+curl https://<your-app>.b4a.run/api/health          # is the deployed backend up?
+# Deploys are triggered from the Back4App and Vercel dashboards — there is no CD.
 ```
