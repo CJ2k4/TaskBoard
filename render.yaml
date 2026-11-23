@@ -8,10 +8,10 @@ services:
     name: taskboard-api
     runtime: docker
     plan: free
-    # The web service and the database MUST be in the same region — that is what makes the
-    # database's internal hostname resolvable and keeps DB traffic off the public internet.
     # Singapore is the closest region to the users; it matters more than usual here because
-    # the app holds a persistent WebSocket rather than just answering requests.
+    # the app holds a persistent WebSocket rather than just answering requests. The Neon
+    # project should sit next to it (AWS ap-southeast-1): every query crosses the public
+    # internet to reach it, so distance is paid on each one.
     region: singapore
     branch: main
     # No CD: deploys are a deliberate button press, not a side effect of pushing.
@@ -43,20 +43,21 @@ services:
       # instead of three that merely happen to work.
       - key: PORT
         value: "8080"
-      # Render exposes a database as discrete fields, not a JDBC URL, and this file cannot
-      # concatenate strings — which is why application.properties composes the URL from parts.
-      # `host` is the internal hostname (dpg-xxxx-a), reachable only from inside the region,
-      # which is why no sslmode is needed here and DB_URL stays unset.
-      - key: DB_HOST
-        fromDatabase: { name: taskboard-db, property: host }
-      - key: DB_PORT
-        fromDatabase: { name: taskboard-db, property: port }
-      - key: DB_NAME
-        fromDatabase: { name: taskboard-db, property: database }
+      # The database is Neon, not Render Postgres — a free Render database is deleted 30 days
+      # after creation, and Neon's free tier has no such expiry. DB_URL overrides the
+      # DB_HOST/DB_PORT/DB_NAME composition in application.properties, so those stay unset.
+      # It must be the JDBC form of Neon's DIRECT endpoint, with credentials moved out:
+      #   jdbc:postgresql://ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+      # - sslmode=require: the connection crosses the public internet, and Neon refuses plaintext
+      # - no channel_binding: libpq's spelling, which pgJDBC rejects
+      # - not the -pooler host: PgBouncer in transaction mode can't hold Flyway's advisory lock
+      # See README, "Connecting to Neon".
+      - key: DB_URL
+        sync: false
       - key: DB_USERNAME
-        fromDatabase: { name: taskboard-db, property: user }
+        sync: false
       - key: DB_PASSWORD
-        fromDatabase: { name: taskboard-db, property: password }
+        sync: false
       # Generate with: openssl rand -base64 48   (jjwt rejects anything under 32 bytes)
       - key: JWT_SECRET
         sync: false
@@ -74,19 +75,3 @@ services:
       # See README's "Sizing the JVM" for the measurements behind each flag.
       - key: JAVA_OPTS
         value: "-Xmx256m -XX:MaxMetaspaceSize=128m -Xss512k -XX:TieredStopAtLevel=1 -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError"
-
-databases:
-  - name: taskboard-db
-    # !! Render deletes a free database 30 days after it is created. !!
-    # That is a hard expiry, not a usage cap — nothing you do keeps it alive. If this deploy
-    # needs to outlive a month, either move to a paid plan or drop this block entirely and
-    # point the service at Neon by setting DB_URL instead (see README, "Keeping Neon").
-    plan: free
-    # Must match the web service's region — see the note there.
-    region: singapore
-    databaseName: taskboard
-    user: taskboard
-    postgresMajorVersion: "16"   # matches docker-compose.yml and CI
-    # No external access: the only client is the web service, over the internal network.
-    # To connect with psql from a laptop, add your IP here (and use ?sslmode=require).
-    ipAllowList: []

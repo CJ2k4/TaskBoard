@@ -41,17 +41,19 @@ cd frontend && npm run typecheck && npm run lint && npm run build
 | Piece | Where | How |
 |---|---|---|
 | Backend | **Render** | Docker web service built from [`server/Dockerfile`](server/Dockerfile) |
-| Database | **Render Postgres** | same region, reached over Render's internal network |
+| Database | **Neon** | Postgres 16, AWS `ap-southeast-1`, reached over TLS via `DB_URL` |
 | Frontend | **Vercel** | Next.js, from the `frontend/` root directory |
 
 The backend's deployed shape is committed as a Render Blueprint in [`render.yaml`](render.yaml) —
-service, database, and every environment variable except the secrets, which Render prompts for once
-and stores itself. There is **no CD**: `autoDeploy` is off and deploys are a deliberate action.
+the service and every environment variable except the secrets, which Render prompts for once and
+stores itself. There is **no CD**: `autoDeploy` is off and deploys are a deliberate action.
 
-Two properties of Render's free tier shape everything below, and neither is a usage cap you can
-economise around: the instance is **0.1 CPU / 512 MB and spins down after 15 minutes** without
-inbound traffic, and a **free database is deleted 30 days after it is created**. See
-[Known constraints](#known-constraints) before relying on this for anything long-lived.
+The database is deliberately **not** Render Postgres: a free Render database is deleted 30 days
+after it is created, a hard expiry rather than a usage cap. Neon's free tier has no expiry, at the
+cost of a connection that crosses the public internet — see [Connecting to Neon](#connecting-to-neon).
+
+Render's free instance is **0.1 CPU / 512 MB and spins down after 15 minutes** without inbound
+traffic. See [Known constraints](#known-constraints) before relying on this for anything long-lived.
 
 ### First deploy
 
@@ -75,40 +77,41 @@ deploy the backend with a placeholder origin first and correct it at the end.
    ```
    Note how long the boot takes. `0.1` is a *tenth* of a core, well below anything the JVM flags
    were measured against — that number is the one worth knowing before Render tells you.
-3. **Render → New → Blueprint → this repo.** It reads `render.yaml` and proposes the web service and
-   the database together, prompting for the three `sync: false` values:
+3. **Create the Neon project** (Postgres 16, AWS Asia Pacific (Singapore), next to the Render
+   region) and take its **direct** connection string, converted to JDBC as described in
+   [Connecting to Neon](#connecting-to-neon).
+4. **Render → New → Blueprint → this repo.** It reads `render.yaml` and proposes the web service,
+   prompting for the `sync: false` values:
+   - `DB_URL` / `DB_USERNAME` / `DB_PASSWORD` — from step 3
    - `JWT_SECRET` — `openssl rand -base64 48`
    - `GOOGLE_CLIENT_ID` — the same client id the frontend will use
-   - `APP_CORS_ALLOWED_ORIGINS` — a placeholder for now; corrected in step 6
+   - `APP_CORS_ALLOWED_ORIGINS` — a placeholder for now; corrected in step 7
 
-   The database is created first so its `fromDatabase` references resolve. Both land in the region
-   pinned in the blueprint, which is what makes the internal hostname (`dpg-xxxx-a`) resolvable —
-   **a service and a database in different regions cannot see each other at all.** Watch the deploy
-   log for Flyway applying `V1`–`V8` against the fresh database, then
-   `curl https://taskboard-api.onrender.com/api/health`.
+   Watch the deploy log for `PostgreSQL 16.x` and Flyway applying `V1`–`V8` against the fresh
+   database, then `curl https://taskboard-api.onrender.com/api/health`.
 
    Doing it by hand instead? Web Service → Docker, **Root Directory `server`** (also the Docker
    build context, which is why the Dockerfile lives there), health check `/api/health`, auto-deploy
    off, and every variable from the table below — `render.yaml` is the checklist.
-4. **Vercel → Import Project.** Root Directory `frontend`, Node 22, and both `NEXT_PUBLIC_*` vars
+5. **Vercel → Import Project.** Root Directory `frontend`, Node 22, and both `NEXT_PUBLIC_*` vars
    set **before the first build** — they are inlined into the bundle, so setting them afterwards
    needs a redeploy, not a restart. Note the production URL.
-5. **Google Cloud Console → Credentials → the OAuth 2.0 Web client → Authorized JavaScript origins**
+6. **Google Cloud Console → Credentials → the OAuth 2.0 Web client → Authorized JavaScript origins**
    → add the exact production frontend origin (scheme included, no path, no trailing slash). Sign-in
    is Google-only, so **until this propagates nobody can log in.** No redirect URI is needed.
-6. **Render → the web service → Environment** → set `APP_CORS_ALLOWED_ORIGINS` to the Vercel
+7. **Render → the web service → Environment** → set `APP_CORS_ALLOWED_ORIGINS` to the Vercel
    production URL, replacing the placeholder. The service restarts; no rebuild and no frontend
    redeploy.
 
-Adding a custom domain later means redoing steps 5 and 6 with the new origin.
+Adding a custom domain later means redoing steps 6 and 7 with the new origin.
 
-### Keeping Neon instead
+### Connecting to Neon
 
-Render's free database expires after 30 days, so the durable alternative is to delete the
-`databases:` block from `render.yaml` (and the five `fromDatabase` entries) and point the service at
-[Neon](https://neon.tech) with a single `DB_URL`. That connection crosses the public internet, which
-is what the `sslmode`, pool and timeout settings in `application.properties` are written for. Neon
-hands out a libpq URI that pgJDBC will not accept verbatim:
+The service reaches [Neon](https://neon.tech) through a single `DB_URL`, which overrides the
+`DB_HOST`/`DB_PORT`/`DB_NAME` composition in `application.properties` (those stay unset on Render).
+That connection crosses the public internet, which is what the `sslmode`, pool and timeout settings
+in `application.properties` are written for. Neon hands out a libpq URI that pgJDBC will not accept
+verbatim:
 
 ```
 postgresql://alice:pw@ep-x-y-pooler.aws.neon.tech/neondb?sslmode=require&channel_binding=require
@@ -140,9 +143,8 @@ Everything on Render is set by `render.yaml`; the table is what it sets and why.
 
 | Variable | Where | Required | Notes |
 |---|---|---|---|
-| `DB_HOST` / `DB_PORT` / `DB_NAME` | Render | yes | `fromDatabase` refs — Render exposes a database as fields, not a URL. `DB_HOST` is the *internal* host, so no TLS parameters are needed |
-| `DB_USERNAME` / `DB_PASSWORD` | Render | yes | likewise `fromDatabase`; never typed in by hand |
-| `DB_URL` | — | no | full JDBC URL; **overrides the three fields above**. This is the Neon path — see [Keeping Neon](#keeping-neon-instead) |
+| `DB_URL` | Render | yes | JDBC URL of Neon's **direct** endpoint with `?sslmode=require` — see [Connecting to Neon](#connecting-to-neon). Overrides `DB_HOST`/`DB_PORT`/`DB_NAME`, which stay unset (they exist for local dev's composed default) |
+| `DB_USERNAME` / `DB_PASSWORD` | Render | yes | Neon role and password, kept **out** of `DB_URL` |
 | `SPRING_PROFILES_ACTIVE` | Render | yes (`prod`) | arms `JwtService`'s weak-secret guard — that is its only job |
 | `JWT_SECRET` | Render | yes | ≥ 32 bytes (`openssl rand -base64 48`). Rotating it logs everyone out |
 | `JWT_ACCESS_TTL` / `JWT_REFRESH_TTL` | Render | no | ISO-8601; default `PT15M` / `P7D` |
@@ -207,9 +209,63 @@ each spin-down.
   an external pinger every 10 minutes (which burns most of the 750 free instance-hours a month, so
   it is really a way of spending the allowance rather than avoiding the problem) and the paid
   Starter plan, which also lifts the CPU.
-- **A free Render database is deleted 30 days after creation.** A hard expiry, not a usage cap —
-  nothing keeps it alive. Anything meant to outlive a month needs a paid plan or
-  [Neon](#keeping-neon-instead).
+- **Neon autosuspends after ~5 minutes idle**, so after a quiet spell the first query also pays a
+  compute resume of about a second, on top of any Render cold start. And Neon's own point-in-time
+  restore lives inside the same account it protects — it is not a substitute for an off-site backup.
+
+### Backups and restore
+
+[`.github/workflows/db-backup.yml`](.github/workflows/db-backup.yml) dumps the Neon database every
+night at 02:00 IST (and on demand), checks that the archive holds data for every app table, encrypts
+it with [age](https://age-encryption.org), and keeps it as a workflow artifact for 30 days. **This
+repo is public, so anyone can download those artifacts.** That is safe only because the dump is
+encrypted on the runner. The private key never goes to GitHub, and **without it every backup is
+unreadable, including to you.**
+
+One-time setup:
+
+```bash
+brew install age
+mkdir -p ~/.config/taskboard
+age-keygen -o ~/.config/taskboard/backup-key.txt     # prints "Public key: age1…"
+# Also store backup-key.txt in a password manager: lose it and the backups are noise.
+
+gh variable set BACKUP_AGE_RECIPIENT --body "age1…"  # the PUBLIC key (not a secret)
+gh secret set BACKUP_DATABASE_URL                    # paste Neon's libpq URI at the prompt
+gh workflow run db-backup.yml && gh run watch        # first run, to prove it works
+```
+
+`BACKUP_DATABASE_URL` is Neon's connection string **as Neon shows it**
+(`postgresql://user:pw@ep-…/neondb?sslmode=require&channel_binding=require`). Unlike `DB_URL`, it is
+read by libpq, which needs none of the JDBC edits. If you bump Neon to a newer Postgres major, raise
+`PG_IMAGE` in the workflow too, because `pg_dump` refuses to dump a newer server. GitHub emails
+whoever last edited the schedule when a run fails. It also **disables scheduled workflows after 60
+days without a commit**, so don't ignore that email either.
+
+**Restore drill.** A backup you have never restored is a hope, not a backup. Run this once now and
+again after any schema change. It uses port 5433 so it never touches the dev database:
+
+```bash
+gh run download --name taskboard-db-<run-number> --dir /tmp/tb-restore
+age -d -i ~/.config/taskboard/backup-key.txt /tmp/tb-restore/*.dump.age > /tmp/tb-restore/restore.dump
+
+docker run -d --name tb-restore -e POSTGRES_DB=taskboard -e POSTGRES_USER=taskboard \
+  -e POSTGRES_PASSWORD=x -p 5433:5432 postgres:16-alpine
+sleep 3
+docker exec -i tb-restore pg_restore -U taskboard -d taskboard --no-owner --no-acl \
+  < /tmp/tb-restore/restore.dump
+
+cd server && DB_PORT=5433 DB_PASSWORD=x ./mvnw spring-boot:run
+# Flyway should report the schema "is up to date" with no migrations applied, and the app
+# on localhost should show production's boards.
+
+docker rm -f tb-restore && rm -rf /tmp/tb-restore      # it's real user data: don't keep it
+```
+
+Restoring production itself is the same `pg_restore`, pointed at a **fresh** Neon project (its libpq
+URI in place of `-U … -d …`). After that, swap `DB_URL`/`DB_USERNAME`/`DB_PASSWORD` on Render and
+restart. Restore into a new project rather than over the damaged one, so the damaged one stays
+around to inspect.
 
 ## Docs
 

@@ -1,0 +1,97 @@
+name: DB backup
+
+# Nightly logical backup of the production database (Neon). Neon's own point-in-time restore lives
+# inside the account it protects; this is the off-site copy that survives losing that account.
+#
+# The repo is PUBLIC, so anyone can download these artifacts. The dump is therefore encrypted on the
+# runner, before upload, to an age public key (repo variable BACKUP_AGE_RECIPIENT). Only the matching
+# private key can read it, and that key never touches GitHub. Setup and restore steps: README,
+# "Backups and restore".
+
+on:
+  schedule:
+    - cron: "30 20 * * *" # 20:30 UTC = 02:00 IST, when nobody is editing a board
+  workflow_dispatch: # run it by hand: `gh workflow run db-backup.yml`
+
+# Two overlapping runs would only produce two copies of the same dump, but cancelling one mid-dump
+# would leave nothing — so queue, never cancel.
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: Dump, verify, encrypt
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # pg_dump refuses to dump a server newer than itself, so this must be >= Neon's major version.
+      # Running it from the official image (rather than the runner's apt client) pins that exactly.
+      PG_IMAGE: postgres:16-alpine
+
+    steps:
+      # Fail with a readable message instead of a confusing pg_dump/age error further down.
+      - name: Check configuration
+        env:
+          DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
+        run: |
+          [ -n "$DATABASE_URL" ] || { echo "::error::Secret BACKUP_DATABASE_URL is not set"; exit 1; }
+          [ -n "$AGE_RECIPIENT" ] || { echo "::error::Variable BACKUP_AGE_RECIPIENT is not set"; exit 1; }
+
+      - name: Install age
+        run: sudo apt-get update -q && sudo apt-get install -y -q age
+
+      # Custom format (-Fc): compressed, and restorable selectively with pg_restore. --no-owner and
+      # --no-acl because the restore target (a fresh Neon project, a local container) won't have
+      # Neon's role names. BACKUP_DATABASE_URL is the libpq URI exactly as Neon shows it — unlike
+      # the app's DB_URL, pg_dump is libpq, so sslmode and channel_binding both work as-is.
+      - name: Dump
+        env:
+          DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          docker run --rm -e DATABASE_URL "$PG_IMAGE" \
+            sh -c 'pg_dump "$DATABASE_URL" --format=custom --no-owner --no-acl' \
+            > "$RUNNER_TEMP/taskboard.dump"
+
+      # A dump that exits 0 can still be useless — the wrong database, or an empty one after a bad
+      # migration. Read the archive's table of contents and insist every app table has its data in
+      # it, so a backup that couldn't restore the app fails *tonight*, not on the day it's needed.
+      - name: Verify the dump
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$RUNNER_TEMP:/backup:ro" "$PG_IMAGE" \
+            pg_restore --list /backup/taskboard.dump > "$RUNNER_TEMP/toc.txt"
+          for table in flyway_schema_history app_user board board_membership board_column card board_activity; do
+            grep -Eq "TABLE DATA public $table( |$)" "$RUNNER_TEMP/toc.txt" \
+              || { echo "::error::Dump has no data for table '$table'"; exit 1; }
+          done
+          echo "Dump OK: $(du -h "$RUNNER_TEMP/taskboard.dump" | cut -f1), $(wc -l < "$RUNNER_TEMP/toc.txt") TOC entries"
+
+      - name: Encrypt
+        env:
+          AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          age --encrypt --recipient "$AGE_RECIPIENT" \
+            --output "out/taskboard-$(date -u +%Y%m%dT%H%MZ).dump.age" "$RUNNER_TEMP/taskboard.dump"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskboard-db-${{ github.run_number }}
+          path: out/*.dump.age
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0 # encrypted bytes don't compress
+
+      # The runner is a throwaway VM, but the plaintext dump holds every user's data — don't leave it
+      # lying around for any later step, even on failure.
+      - name: Remove plaintext dump
+        if: always()
+        run: rm -f "$RUNNER_TEMP/taskboard.dump" "$RUNNER_TEMP/toc.txt"
